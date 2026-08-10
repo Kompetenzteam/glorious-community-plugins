@@ -1,0 +1,14 @@
+{
+  "version": "1.0.0",
+  "objects": [
+    {
+      "name": "hello",
+      "description": "Beispiel-Objekt des hello-Plugins",
+      "actions": ["execute"],
+      "default_role_permissions": {
+        "user": ["execute"],
+        "admin": ["*"]
+      }
+    }
+  ]
+}

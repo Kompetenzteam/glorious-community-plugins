@@ -1,0 +1,33 @@
+{
+  "format_version": 1,
+  "id": "glorious-community",
+  "name": "Glorious Community Plugins",
+  "maintainer": "Glorious Platform Team",
+  "plugins": [
+    {
+      "name": "hello",
+      "title": "Hello — Vorlagen-Plugin",
+      "description": "Entwickler-Vorlage für Glorious-Plugins: minimale, lauffähige Struktur (manifest.json, functions.json, README, Binary) mit stdin/stdout-Ping-Pong als Dummy-Implementierung.",
+      "author": "Glorious Platform Team",
+      "license": "MIT",
+      "homepage": "https://github.com/Kompetenzteam/glorious-community-plugins/tree/main/examples/hello-plugin",
+      "min_platform_version": "0.9.0",
+      "tags": ["vorlage", "beispiel", "hello"],
+      "icon_url": "https://raw.githubusercontent.com/Kompetenzteam/glorious-community-plugins/main/icons/hello.svg",
+      "platforms": {
+        "windows-amd64": {
+          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/v0.1.0/hello-0.1.0-windows-amd64.glorious-plugin",
+          "sha256": "70e0a10d268ab102b58a9f8e558095980864a769abce7c172913d62d5d4043ab",
+          "signer_pubkey": "EW0OjGzehBfsLTSL1DCjQDlIcJjU+CG/NjJlx+GRMss="
+        },
+        "linux-amd64": {
+          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/v0.1.0/hello-0.1.0-linux-amd64.glorious-plugin",
+          "sha256": "31fa3e43784314bbc37039a29b84f533b57ccc4d28ed36aa07b4f3484e2c104d",
+          "signer_pubkey": "EW0OjGzehBfsLTSL1DCjQDlIcJjU+CG/NjJlx+GRMss="
+        }
+      },
+      "latest_version": "0.1.0",
+      "changelog": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/tag/v0.1.0"
+    }
+  ]
+}

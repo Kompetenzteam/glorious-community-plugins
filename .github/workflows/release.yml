@@ -1,0 +1,147 @@
+# Release-Workflow für das Glorious Community Plugin Repository
+#
+# Tag-getriggert: git tag <plugin>-<version> && git push origin <tag>
+# z. B. `wiki-1.2.0` -> Plugin "wiki", Version "1.2.0".
+#
+# Der Workflow baut das Plugin-Binary in einer GOOS/GOARCH-Matrix, signiert das
+# manifest.json mit dem Ed25519-Key aus dem Secret SIGNING_KEY, validiert README
+# und functions.json, erzeugt die .glorious-plugin-ZIPs und veröffentlicht ein
+# GitHub-Release mit allen Assets.
+#
+# Secrets (Repository > Settings > Secrets and variables > Actions):
+#   SIGNING_KEY   Ed25519-Private-Key des Autors — PKCS#8-PEM ("-----BEGIN PRIVATE
+#                 KEY-----", mehrzeilig) ODER Base64 davon. Wird NIE ausgegeben.
+#
+# MIT License — Vorlage für Plugin-Autoren, frei anpassbar.
+name: Release Plugin
+
+on:
+  push:
+    tags:
+      - "*-*.*.*" # Plugin-Tags im Format <plugin>-<version> (SemVer), z. B. hello-0.1.0.
+                  # Bootstrap-Tags wie v0.1.0 (manuell erstellte Team-Releases) triggern den Workflow nicht.
+
+permissions:
+  contents: write # für gh release create
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
+            ext: .exe
+          - goos: linux
+            goarch: amd64
+            ext: ""
+          - goos: darwin
+            goarch: arm64
+            ext: ""
+    runs-on: ubuntu-latest
+    env:
+      PLUGIN_NAME: ${{ github.ref_name }} # z. B. wiki-1.2.0
+      GO_VERSION: "1.26"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Plugin-Name und Version aus dem Tag ableiten
+        id: tag
+        shell: bash
+        run: |
+          # Tag-Format: <plugin>-<version> mit SemVer-Version, z. B. wiki-1.2.0.
+          name="${PLUGIN_NAME%-*}"
+          version="${PLUGIN_NAME##*-}"
+          if [[ -z "$name" || ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag '$PLUGIN_NAME' entspricht nicht <plugin>-<version> (SemVer)." >&2
+            exit 1
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Signing-Key bereitstellen (PEM oder Base64)
+        shell: bash
+        run: |
+          # Akzeptiert PKCS#8-PEM und Base64(PEM). Das Secret wird nur in
+          # key.pem materialisiert und ist nie in Logs/Outputs sichtbar.
+          printf '%s' "$SIGNING_KEY" > key.pem
+          if ! grep -q -- "-----BEGIN" key.pem; then
+            if ! base64 -d key.pem > key.dec 2>/dev/null; then
+              echo "SIGNING_KEY ist weder PEM noch Base64." >&2
+              exit 1
+            fi
+            mv key.dec key.pem
+          fi
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            plugins/${{ steps.tag.outputs.name }}/go.mod
+            tools/build-plugin/go.mod
+
+      - name: Builder-Tooling bauen
+        working-directory: tools/build-plugin
+        run: go build -o ../../build-plugin .
+
+      - name: Plugin-Binary bauen (${{ matrix.goos }}/${{ matrix.goarch }})
+        shell: bash
+        working-directory: plugins/${{ steps.tag.outputs.name }}
+        run: |
+          # Go-Plugins: direkt bauen. Andere Sprachen: build.sh bereitstellen.
+          if [[ -f go.mod ]]; then
+            GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+              go build -trimpath -ldflags "-s -w" -o plugin${{ matrix.ext }} .
+          elif [[ -f build.sh ]]; then
+            GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} ./build.sh plugin${{ matrix.ext }}
+          else
+            echo "plugins/<name> braucht go.mod oder build.sh." >&2
+            exit 1
+          fi
+
+      - name: Plugin-ZIP bauen, validieren und signieren
+        shell: bash
+        working-directory: plugins/${{ steps.tag.outputs.name }}
+        run: |
+          out="../../${{ steps.tag.outputs.name }}-${{ matrix.goos }}-${{ matrix.goarch }}.glorious-plugin"
+          args=(--manifest manifest.json --functions functions.json --readme README.md
+                --binary "plugin${{ matrix.ext }}" --out "$out" --signing-key ../../key.pem)
+          [[ -d assets ]] && args+=(--asset assets)
+          ../../build-plugin "${args[@]}"
+
+      - name: Prüfsummen + Public Key ermitteln
+        id: asset
+        shell: bash
+        run: |
+          file="${{ steps.tag.outputs.name }}-${{ matrix.goos }}-${{ matrix.goarch }}.glorious-plugin"
+          echo "sha256=$(sha256sum "$file" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "asset=$file" >> "$GITHUB_OUTPUT"
+          echo "pubkey=$(../../build-plugin --print-pubkey --signing-key ../../key.pem)" >> "$GITHUB_OUTPUT"
+
+      - name: Release-Assets hochladen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          asset="${{ steps.asset.outputs.asset }}"
+          tag="${{ github.ref_name }}"
+          # Release beim ersten Matrix-Job anlegen, danach Assets ergänzen.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$asset" --clobber
+          else
+            gh release create "$tag" "$asset" \
+              --title "$tag" \
+              --notes "Plugin $tag — Assets siehe unten. Prüfsummen und signer_pubkey werden nach dem Workflow-Lauf aus den Job-Logs übernommen (siehe README §3)."
+          fi
+
+      - name: Zusammenfassung (für index.json-Pflege)
+        shell: bash
+        run: |
+          echo "::notice::${GITHUB_REPOSITORY} ${GITHUB_REF_NAME} ${{ matrix.goos }}-${{ matrix.goarch }}"
+          echo "::notice::sha256=${{ steps.asset.outputs.sha256 }}"
+          echo "::notice::pubkey=${{ steps.asset.outputs.pubkey }}"
+          echo "::notice::asset=${{ steps.asset.outputs.asset }}"

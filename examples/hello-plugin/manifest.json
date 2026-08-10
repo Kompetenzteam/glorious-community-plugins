@@ -1,0 +1,8 @@
+{
+  "name": "hello",
+  "version": "0.1.0",
+  "description": "Vorlagen-Plugin 'hello' für Plugin-Autoren: minimale, lauffähige Struktur eines Glorious-Plugins.",
+  "entrypoint": "./plugin",
+  "permissions": [],
+  "license": "MIT"
+}
