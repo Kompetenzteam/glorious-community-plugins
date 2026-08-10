@@ -12,21 +12,25 @@
       "license": "MIT",
       "homepage": "https://github.com/Kompetenzteam/glorious-community-plugins/tree/main/plugins/hello",
       "min_platform_version": "0.9.0",
-      "tags": ["vorlage", "beispiel", "hello"],
+      "tags": [
+        "vorlage",
+        "beispiel",
+        "hello"
+      ],
       "icon_url": "https://raw.githubusercontent.com/Kompetenzteam/glorious-community-plugins/main/icons/hello.svg",
       "platforms": {
         "windows-amd64": {
-          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-0.1.1/hello-0.1.1-windows-amd64.glorious-plugin",
+          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-0.1.1/hello-windows-amd64.glorious-plugin",
           "sha256": "4c6f9c83f12e90c50fe41dc229202b62c036459025a5bf5af057721025dbfdb1",
           "signer_pubkey": "EW0OjGzehBfsLTSL1DCjQDlIcJjU+CG/NjJlx+GRMss="
         },
         "linux-amd64": {
-          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-0.1.1/hello-0.1.1-linux-amd64.glorious-plugin",
+          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-0.1.1/hello-linux-amd64.glorious-plugin",
           "sha256": "7a3e67e2d74710d50aad540d2e05d3eb6ab2a558e3acf9c527c5541d6827a891",
           "signer_pubkey": "EW0OjGzehBfsLTSL1DCjQDlIcJjU+CG/NjJlx+GRMss="
         },
         "darwin-arm64": {
-          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-0.1.1/hello-0.1.1-darwin-arm64.glorious-plugin",
+          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-0.1.1/hello-darwin-arm64.glorious-plugin",
           "sha256": "71715bf81419392960242f972e20a0fd8aba6629e8f5012d21b5f506d9b60b65",
           "signer_pubkey": "EW0OjGzehBfsLTSL1DCjQDlIcJjU+CG/NjJlx+GRMss="
         }
