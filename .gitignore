@@ -1,6 +1,7 @@
 # Plugin-Binaries (Wegwerf-Beispiele — kommen nur als ZIPs in die Releases)
-/examples/*/plugin
-/examples/*/plugin.exe
+/plugins/*/plugin
+/plugins/*/plugin.exe
+/plugins/*/*.exe
 
 # Signierte Plugin-ZIPs + lokale Release-Assets — liegen nur in GitHub Releases
 *.glorious-plugin

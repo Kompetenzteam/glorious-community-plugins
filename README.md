@@ -1,7 +1,7 @@
 # Glorious Community Plugins
 
 Offizielles Community-Plugin-Repository der Glorious Platform: Schema, CI-Workflow,
-Builder-Tooling und das Vorlagen-Plugin [`hello`](./examples/hello-plugin/) für
+Builder-Tooling und das Vorlagen-Plugin [`hello`](./plugins/hello/) für
 Plugin-Autoren.
 
 Ein Plugin ist **eine Datei**: ein `.glorious-plugin`-ZIP (≤ 50 MiB, ≤ 1000 Einträge),
@@ -19,7 +19,7 @@ glorious-community-plugins/
 ├── index.json                    ← der Katalog (einziger Vertrag für die App)
 ├── index.schema.md               ← Schema + Validierungsregeln für index.json
 ├── README.md                     ← dieses Dokument
-├── examples/hello-plugin/        ← Vorlagen-Plugin (Entwickler-Beispiel)
+├── plugins/hello/                ← Vorlagen-Plugin (Entwickler-Beispiel)
 │   ├── manifest.json             ← Metadaten + Signatur (vom Builder erzeugt)
 │   ├── functions.json            ← RBAC-Permission-Contract (Objekte/Aktionen)
 │   ├── README.md                 ← Pflicht: ≥ 300 Zeichen, ## Beschreibung + ## Berechtigungen
@@ -35,7 +35,7 @@ Clone-Volumen, kein LFS-Kontingent).
 
 ## 2. Das Vorlagen-Plugin `hello`
 
-Unter [`examples/hello-plugin/`](./examples/hello-plugin/) liegt das offizielle
+Unter [`plugins/hello/`](./plugins/hello/) liegt das offizielle
 Vorlagen-Plugin — die minimale, lauffähige Struktur, die jedes Plugin mitbringen muss:
 
 - **`manifest.json`** — Metadaten (`name`, `version`, `description`, `entrypoint`,
@@ -45,11 +45,13 @@ Vorlagen-Plugin — die minimale, lauffähige Struktur, die jedes Plugin mitbrin
 - **`functions.json`** — RBAC-Permission-Contract (Version `1.0.0`), Limits: **max. 50
   Objekte**, **max. 10 Aktionen pro Objekt**. Aktionen stammen aus dem System-Aktionsset
   (`read`, `create`, `update`, `delete`, `execute`, `manage`, `review`, `grant`,
-  `write`); Wildcards nur für die `admin`-Rolle.
+  `write`); Wildcards nur für die `admin`-Rolle. Optional ergänzt die Sektion
+  `profile_fields` Plugin-registrierte Benutzerprofil-Felder (`name`, `label`, `type`,
+  `options`, `group`, `hint`; max. 100 Felder pro Plugin).
 - **`README.md`** — Pflicht (maschinell validiert): ≥ 300 Zeichen und die Sektionen
   `## Beschreibung` + `## Berechtigungen`.
 - **Binary** — `main.go` ist eine Dummy-Implementierung: loggt beim Start
-  `hello-plugin: started (version 0.1.0)` und antwortet auf stdin-Eingabe `ping` mit
+  `hello-plugin: started (version 0.1.1)` und antwortet auf stdin-Eingabe `ping` mit
   `pong`. Der Entrypoint im Manifest (`./plugin`) muss zum Binary-Namen im ZIP passen
   (`--binary plugin.exe` → `plugin.exe` im ZIP, Entrypoint `./plugin.exe`).
 
@@ -69,7 +71,7 @@ Checkliste pro Plugin-Eintrag:
 
 ## 4. Neues Plugin veröffentlichen
 
-**Ablauf für Autoren** (das Vorlagen-Plugin `hello` unter `examples/hello-plugin/`
+**Ablauf für Autoren** (das Vorlagen-Plugin `hello` unter `plugins/hello/`
 kopieren und anpassen):
 
 1. Plugin-Quellverzeichnis anlegen: `plugins/<name>/` mit `manifest.json`,
@@ -110,11 +112,11 @@ den `index.json`. Der Builder akzeptiert PKCS#8-PEM und Base64 davon.
 cd tools/build-plugin
 go build -o build-plugin .
 ./build-plugin \
-  --manifest ../../examples/hello-plugin/manifest.json \
-  --functions ../../examples/hello-plugin/functions.json \
-  --readme ../../examples/hello-plugin/README.md \
-  --binary ../../examples/hello-plugin/plugin.exe \
-  --out hello-0.1.0-windows-amd64.glorious-plugin \
+  --manifest ../../plugins/hello/manifest.json \
+  --functions ../../plugins/hello/functions.json \
+  --readme ../../plugins/hello/README.md \
+  --binary ../../plugins/hello/plugin.exe \
+  --out hello-0.1.1-windows-amd64.glorious-plugin \
   --signing-key key.pem
 ```
 

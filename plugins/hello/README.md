@@ -10,7 +10,7 @@ lauffähige Struktur, die jedes Plugin mitbringen muss: ein Binary
 Pflicht-Dokumentation.
 
 Das Binary ist eine bewusst einfache Dummy-Implementierung: Beim Start
-loggt es `hello-plugin: started (version 0.1.0)`, liest anschließend
+loggt es `hello-plugin: started (version 0.1.1)`, liest anschließend
 zeilenweise von stdin und antwortet auf die Eingabe `ping` mit `pong`.
 Echte Plugins ersetzen diesen stdin/stdout-Ping-Pong durch die
 net/rpc-basierte Plugin-API der Glorious Platform (siehe Kommentare in
@@ -30,6 +30,11 @@ Die `functions.json` deklariert genau ein Objekt `hello` mit einer Aktion
 `grant`, `write`). Standardmäßig dürfen Benutzer mit der Rolle `user`
 das Objekt `hello` ausführen (`execute`); Administratoren haben über
 `admin: ["*"]` vollen Zugriff.
+
+Zusätzlich registriert das Plugin über die Sektion `profile_fields` ein
+Demo-Profilfeld (`favorite_color`, Typ `text`), das nach der Installation
+als editierbares Feld im Benutzerprofil erscheint — ein Beispiel dafür,
+wie Plugins eigene Profilfelder beisteuern können.
 
 Das Plugin selbst verlangt im `manifest.json` keine zusätzlichen
 Laufzeit-Permissions (`"permissions": []`) — es greift weder auf das

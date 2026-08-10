@@ -22,7 +22,7 @@ import (
 )
 
 // version wird beim Start geloggt und muss mit manifest.json übereinstimmen.
-const version = "0.1.0"
+const version = "0.1.1"
 
 func main() {
 	log.Printf("hello-plugin: started (version %s)", version)

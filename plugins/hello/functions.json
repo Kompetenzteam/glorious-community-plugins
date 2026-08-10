@@ -10,5 +10,13 @@
         "admin": ["*"]
       }
     }
+  ],
+  "profile_fields": [
+    {
+      "name": "favorite_color",
+      "label": "Lieblingsfarbe",
+      "type": "text",
+      "hint": "Demo-Feld des hello-Plugins (wird im Profil angezeigt)"
+    }
   ]
 }
