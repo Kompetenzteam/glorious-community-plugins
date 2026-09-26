@@ -21,7 +21,7 @@
       "platforms": {
         "windows-amd64": {
           "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-0.1.2/hello-windows-amd64.glorious-plugin",
-          "sha256": "d700587018989e890fa8d883c5e6bab6df965a93cfb00c641bb2f5bb336cc4f5",
+          "sha256": "2ea6a48110ca14550d55a67f53bb52c601f0f91479a267f26deb8c85f13fed72",
           "signer_pubkey": "sFzPAi3b5SsIRGhmwD8cboJqWrsj7TQAlh2cisSrlbY="
         }
       },
