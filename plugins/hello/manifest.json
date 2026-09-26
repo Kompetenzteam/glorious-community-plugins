@@ -1,8 +1,8 @@
 {
   "name": "hello",
-  "version": "0.1.1",
-  "description": "Vorlagen-Plugin 'hello' für Plugin-Autoren: minimale, lauffähige Struktur eines Glorious-Plugins.",
-  "entrypoint": "./plugin",
+  "version": "0.1.2",
+  "description": "Referenz-Plugin 'hello': minimales, echtes Out-of-Process-Plugin (mTLS + net/rpc, Handshake- und Hello-Service) als Vorlage für Plugin-Autoren.",
+  "entrypoint": "./plugin.exe",
   "permissions": [],
   "license": "MIT"
 }

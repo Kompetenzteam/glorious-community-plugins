@@ -93,16 +93,25 @@ jobs:
         shell: bash
         working-directory: plugins/${{ steps.tag.outputs.name }}
         run: |
-          # Go-Plugins: direkt bauen. Andere Sprachen: build.sh bereitstellen.
+          # Go-Plugins direkt bauen, sonst build.sh aufrufen.
+          #
+          # Der Binary-Name muss exakt dem entrypoint aus manifest.json
+          # entsprechen: der Host vergleicht ihn unverändert mit dem entpackten
+          # Archiv (er ergänzt keine Endungen), und das build-plugin-Tool
+          # warnt sonst. Go nimmt -o plugin.ext, build.sh bekommt denselben
+          # Namen als Argument.
+          binary="plugin${{ matrix.ext }}"
           if [[ -f go.mod ]]; then
             GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-              go build -trimpath -ldflags "-s -w" -o plugin${{ matrix.ext }} .
+              go build -trimpath -ldflags "-s -w" -o "$binary" .
           elif [[ -f build.sh ]]; then
-            GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} ./build.sh plugin${{ matrix.ext }}
+            GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} ./build.sh "$binary"
           else
             echo "plugins/<name> braucht go.mod oder build.sh." >&2
             exit 1
           fi
+          echo "binary=$binary" >> "$GITHUB_OUTPUT"
+        id: binary
 
       - name: Plugin-ZIP bauen, validieren und signieren
         shell: bash
@@ -110,7 +119,7 @@ jobs:
         run: |
           out="../../${{ steps.tag.outputs.name }}-${{ matrix.goos }}-${{ matrix.goarch }}.glorious-plugin"
           args=(--manifest manifest.json --functions functions.json --readme README.md
-                --binary "plugin${{ matrix.ext }}" --out "$out" --signing-key ../../key.pem)
+                --binary "${{ steps.binary.outputs.binary }}" --out "$out" --signing-key ../../key.pem)
           [[ -d assets ]] && args+=(--asset assets)
           ../../build-plugin "${args[@]}"
 
