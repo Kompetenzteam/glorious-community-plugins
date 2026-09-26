@@ -66,13 +66,16 @@ const (
 )
 
 // handshakeService implements the host-mandated handshake: the host calls
-// Handshake.Ping after the mTLS dial to verify liveness and the protocol
+// HandshakeService.Ping after the mTLS dial to verify liveness and the protocol
 // version before it uses any of the plugin's own services.
 //
-// The wire names are part of the contract: net/rpc addresses a method as
-// "<type>.<Method>", so this service answers "Handshake.Ping", and the request
-// and response structs keep the plain (unnamed) field encoding used by the
-// host's HandshakeService in internal/plugins/mtls.go.
+// The wire name is part of the contract: net/rpc addresses a method as
+// "<ServiceName>.<Method>", and the host's MTLSClient calls
+// "HandshakeService.Ping" (internal/plugins/mtls.go). RegisterName therefore
+// has to use that exact literal — a Go type name would only match by
+// coincidence and a mismatch fails the start with "can't find service".
+// The request and response structs keep the plain (unnamed) field encoding
+// used by the host's HandshakeService.
 type handshakeService struct{}
 
 // PingRequest is the (empty) argument of Handshake.Ping.
@@ -185,7 +188,7 @@ func run() error {
 	defer func() { _ = listener.Close() }()
 
 	server := rpc.NewServer()
-	if err := server.RegisterName("Handshake", handshakeService{}); err != nil {
+	if err := server.RegisterName("HandshakeService", handshakeService{}); err != nil {
 		return fmt.Errorf("register handshake service: %w", err)
 	}
 	if err := server.RegisterName("Hello", helloService{name: name}); err != nil {
