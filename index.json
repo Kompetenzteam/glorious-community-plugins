@@ -20,7 +20,7 @@
       "icon_url": "https://raw.githubusercontent.com/Kompetenzteam/glorious-community-plugins/main/icons/hello.svg",
       "platforms": {
         "windows-amd64": {
-          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-0.1.2/hello-windows-amd64.glorious-plugin",
+          "url": "http://127.0.0.1:3000/Kompetenzteam/glorious-community-plugins/releases/download/hello-0.1.2/hello-windows-amd64.glorious-plugin",
           "sha256": "2ea6a48110ca14550d55a67f53bb52c601f0f91479a267f26deb8c85f13fed72",
           "signer_pubkey": "sFzPAi3b5SsIRGhmwD8cboJqWrsj7TQAlh2cisSrlbY="
         }

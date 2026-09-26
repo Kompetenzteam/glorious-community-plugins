@@ -69,6 +69,27 @@ Checkliste pro Plugin-Eintrag:
 3. `latest_version` und `changelog` aktualisieren.
 4. Wohlgeformtheit prüfen: `python -m json.tool index.json`.
 
+### Warum die `url` auf `127.0.0.1` zeigen muss (kein LAN-Hostname)
+
+`platforms.<key>.url` darf in dieser privaten Dev-/LAN-Instanz **nur** ein
+Loopback-Host sein (`127.0.0.1`/`localhost`), kein LAN-Name oder eine
+LAN-IP wie `192.168.1.183`:
+
+- Der Marketplace-Installer der Plattform prüft jede Index- und Asset-URL
+  über `checkSecureTransport` (`internal/marketplace/sync.go`,
+  `internal/marketplace/install.go`) und lehnt alles außer `https://`
+  sowie `http://` auf `localhost`/`127.0.0.1` mit `ErrInsecureTransport`
+  ab. Es gibt **keinen** Config-Schalter, der das öffnet.
+- Der Gitea-Container veröffentlicht Port 3000 ausschließlich auf die
+  Loopback-Adresse des Hosts; ein entferntes Gerät kann den Release-Link
+  ohnehin nicht abrufen.
+- Das Community-Repo ist **privat**: anonyme Download-Links liefern 404.
+  Ein funktionierender Install braucht deshalb zusätzlich einen
+  Source-Token (siehe Abschnitt 7), und der Installer sendet heute
+  **keine** Credentials mit. Der Release-Link ist damit nur innerhalb
+  derselben Maschine mit Token-gesichertem Git-Zugriff nützlich — siehe
+  Abschnitt 7 für die vollständige Analyse und die Optionen.
+
 ## 4. Neues Plugin veröffentlichen
 
 **Ablauf für Autoren** (das Vorlagen-Plugin `hello` unter `plugins/hello/`
@@ -129,3 +150,94 @@ Details zu allen Flags: `./build-plugin -h`.
 - Keine Symlinks und keine Pfad-Escapes in Archiven (der Builder lehnt sie ab).
 - Keine Wildcards in `functions.json`-Aktionen außer `admin: ["*"]`.
 - Keine Fat-Archive: ein ZIP pro Plattform.
+
+## 7. Install aus einem privaten Repo — belegter Befund
+
+Gilt für den Stand der Plattform `glorious-platform_v2` (Analyse 2026-09-26).
+Alle Fundstellen relativ zum Plattform-Repo.
+
+**Frage 1 — Felder des Source-Typs und Auth-Felder.**
+`models.MarketplaceSource` (`internal/models/marketplace_source.go:23-38`) hat
+`Type` (`github|gitea|generic`), `BaseURL` (`:27`), `Owner`/`Repo` (`:28-29`),
+`Branch` (`:30`), `Enabled` (`:31`), `IsDefault` (`:32`) und
+`TokenEncrypted` (`:33`, „fine-grained PATs for private repositories").
+`TokenEncrypted` ist ein **einzelnes** Feld — es gibt **kein**
+`basic_auth`, kein `header` und keine Header-Liste. `Type` ist auf
+`github|gitea|generic` beschränkt (`internal/marketplace/service.go:30-32`),
+d.h. ein Verzeichnis-/Datei-Source-Typ existiert nicht. Die API nimmt genau
+einen Token entgegen: `sourceRequest.Token` (`internal/handler/api/marketplace_api.go:720`),
+verschlüsselt ihn (`:776-783` bzw. `:821-828`) und gibt ihn **nie** zurück
+(`sourceResponse`, `:674-677`).
+
+**Frage 2 — Download-Pfad und Credentials.**
+`SyncService.Sync` (`internal/marketplace/sync.go:61-114`) baut einen nackten
+`GET` und setzt ausschließlich `If-None-Match` (`:78`) — kein
+`Authorization`. `Downloader.Download` (`internal/marketplace/install.go:348-376`)
+macht dasselbe: `http.NewRequestWithContext(..., nil)` (`:356`) und
+`d.client.Do(req)` (`:360`), **ohne jeden Header**. Der Client ist ein
+blanker `http.Client` ohne Transport mit Credentials —
+`marketplace.NewDownloader(nil)` (`cmd/glorious-platform/main.go:946`).
+`RepositoryService.SyncSource` lädt die Quelle (`service.go:197-208`) und
+ruft `s.syncer.Sync(ctx, *src)` (`:225`); der Produktions-Syncer ist der
+Adapter `marketplaceIndexSyncer` (`main.go:1544-1556`), der an
+`SyncService.Sync` delegiert — `*src` **enthält** `TokenEncrypted`, aber
+`Sync`/`Download` lesen das Feld nie und `DecryptToken`
+(`service.go:388-392`, Kommentar `:386-387`: „the sync service (M2a) uses
+[it] to present a decrypted token to the remote host") wird im
+Produktionspfad **von keinem Aufrufer** verwendet.
+`SyncService` hat kein Feld für einen TokenCipher. Kurz: **Token wird
+verschlüsselt gespeichert, aber nie gesendet** — die als „fine-grained
+PATs for private repositories" dokumentierte Fähigkeit ist noch nicht
+verdrahtet.
+
+**Zusatz-Blocker — Transport.** `checkSecureTransport`
+(`sync.go:176-185`) lässt nur `https://` zu, plus `http://` **nur** für
+`localhost`/`127.0.0.1`. Der `generic`-Typ reicht `BaseURL` als Index-URL
+unverändert durch (`sync.go:161-165`), und dieselbe Prüfung läuft im
+Download-Pfad (`install.go:353-355`). Das ist rein hostname-basiert: eine
+URL auf einen anderen Hostnamen, der auf 127.0.0.1 auflöst, wäre erlaubt,
+eine LAN-IP wie `192.168.1.183` nicht.
+
+**Frage 3 — Ist ein Install aus einem privaten Gitea-Repo ohne weitere
+Maßnahmen möglich?** **Nein.** Anonymer Abruf liefert 404 (privates Repo;
+bestätigt: `curl` ohne Token → `404`, Repo-Metadaten `private: True`,
+anonymer Git-Zugriff `401`). Mit Token gibt es keinen Sendepfad — und
+selbst mit Token bliebe der Asset-Download unauthentifiziert, weil
+`Downloader` die Source nicht kennt. Zusätzlich veröffentlicht der
+Gitea-Container Port 3000 nur auf Loopback.
+
+**Vollständigkeitskontrolle (keine stille Lücke).** Eine Suche über das
+gesamte Plattform-Repo nach `Authorization`, `Bearer` und `BasicAuth`
+liefert Treffer **ausschließlich** in Session-/JWT-/OIDC-/WAF-Middleware —
+**kein** Treffer in `internal/marketplace/` oder in einem
+HTTP-Transport, der von `Sync`/`Download` genutzt wird. Die obige Aussage
+„Installer sendet keine Credentials" ist damit repo-weit belegt und nicht
+nur auf die gelesenen Funktionen gestützt.
+
+**Optionen (Trade-offs).**
+
+1. **Community-Repo öffentlich machen.** Kleinster Eingriff, `generic`
+   funktioniert sofort mit dem Release-Link; kein Plattform-Code. Preis:
+   Plugin-Artefakte/Signing-Metadaten sind öffentlich, und die
+   Loopback-Beschränkung bleibt — nur die eigene Maschine kann installieren
+   (`192.168.1.183` wird weiter abgelehnt).
+2. **Auth-Support im Source-Typ verdrahten** (kleinster echter Fix):
+   `Sync`/`Download` bekommen einen optionalen Authorization-Header,
+   gespeist aus `TokenEncrypted` via `DecryptToken`. Das ist genau die in
+   `marketplace_source.go:18-20` versprochene Funktion; Eigentum und
+   Speicherung existieren bereits. Preis: Host-Codeänderung (in diesem
+   Auftrag bewusst nicht gemacht), und der 302 auf `…/releases/download/…`
+   muss `localhost` in der Location behalten, damit die Transport-Prüfung
+   im Redirect-Fall nicht greift.
+3. **Lokaler Datei-/Verzeichnis-Source.** Umgeht HTTP, Auth und die
+   Transport-Prüfung vollständig und ist für ein LAN-Studio am robustesten.
+   Preis: **existiert nicht** — `Type` ist auf `github|gitea|generic`
+   beschränkt (`service.go:30-32`); das ist die größte Codeänderung.
+4. **LAN-Betrieb (mehrere Maschinen)** braucht zusätzlich TLS auf Gitea
+   (`https://…`) oder einen Hostnamen, der auf Loopback zeigt; mit
+   `http://` und einer LAN-IP ist kein Install möglich.
+5. **Asset in den Index einbetten** (base64 im `index.json`, damit der
+   `generic`-Typ das Plugin selbst transportiert, ohne zweite
+   authentifizierte Anfrage). Beseitigt den Credential-Bedarf beim
+   Download, kostet aber Indexgröße und ist mit dem 6,4-MB-Archiv und
+   `maxIndexBytes` unschön.
