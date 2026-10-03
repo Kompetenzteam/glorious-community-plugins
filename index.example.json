@@ -1,0 +1,42 @@
+{
+  "format_version": 1,
+  "id": "example-repo-id",
+  "name": "Example Repository Name",
+  "maintainer": "Example Maintainer Team",
+  "plugins": [
+    {
+      "name": "example-plugin",
+      "title": "Example Plugin (Platzhalter)",
+      "description": "Dies ist eine Beispiel-Beschreibung. Ersetze sie durch eine ein- bis zweiseitige Beschreibung des Plugins für die Katalogansicht.",
+      "author": "Example Author",
+      "license": "MIT",
+      "homepage": "https://example.com/example-plugin",
+      "min_platform_version": "0.0.0",
+      "tags": [
+        "example",
+        "placeholder"
+      ],
+      "icon_url": "https://example.com/icons/example-plugin.svg",
+      "readme_url": "https://example.com/example-plugin/README.md",
+      "platforms": {
+        "windows-amd64": {
+          "url": "https://example.com/releases/example-plugin-0.0.0-windows-amd64.glorious-plugin",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "signer_pubkey": "RVhBTVBMRVBMQUNFSE9MREVST05MWU5PVEFSRUFMS0U="
+        },
+        "linux-amd64": {
+          "url": "https://example.com/releases/example-plugin-0.0.0-linux-amd64.glorious-plugin",
+          "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+          "signer_pubkey": "RVhBTVBMRVBMQUNFSE9MREVST05MWU5PVEFSRUFMS0U="
+        },
+        "darwin-arm64": {
+          "url": "https://example.com/releases/example-plugin-0.0.0-darwin-arm64.glorious-plugin",
+          "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "signer_pubkey": "RVhBTVBMRVBMQUNFSE9MREVST05MWU5PVEFSRUFMS0U="
+        }
+      },
+      "latest_version": "0.0.0",
+      "changelog": "https://example.com/example-plugin/changelog"
+    }
+  ]
+}
