@@ -319,34 +319,86 @@ jobs:
           # dem Release-Tag abgeleitet, damit Version/Tag/URL/sha256 nicht mehr
           # auseinanderdriften (frühere Ursache: nur sha256/latest_version wurden
           # geschrieben, die URLs zeigten weiter auf den alten Tag).
-          python3 - "$GITHUB_WORKSPACE/index.json" "$version" "$tag" "$GITHUB_WORKSPACE/asset-hashes.txt" <<'PY'
+          # Fail-closed Tag-Validierung VOR jeder Verwendung. Der Tag ist eine
+          # vom Benutzer kontrollierte Zeichenkette und wird in Shell/JSON
+          # interpoliert; ohne Gate sind Argument-Trennung (Leerzeichen),
+          # JSON-Struktur-Smuggle (Anführungszeichen/Komma), Kommandoausführung
+          # (Shell-Substitution), Semikolon-Trennung und Pfadsegmente (../)
+          # möglich. Er muss dem Muster ^[A-Za-z0-9][A-Za-z0-9._-]*$ entsprechen
+          # UND als <name>-<semver> parsebar sein, sonst exit 1.
+          python3 - "$tag" "$name" "$version" <<'PY'
+          import re, sys
+          tag, name, version = sys.argv[1], sys.argv[2], sys.argv[3]
+          if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", tag):
+              print(
+                  f"tag-validation: FAIL - tag {tag!r} verletzt "
+                  r"^[A-Za-z0-9][A-Za-z0-9._-]*$ (erlaubt sind nur "
+                  "Buchstaben, Ziffern, '.', '_' und '-', beginnend mit "
+                  "Buchstabe/Ziffer).",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          m = re.fullmatch(r"(.+)-([0-9]+\.[0-9]+\.[0-9]+)", tag)
+          if not m or m.group(1) != name or m.group(2) != version:
+              print(
+                  f"tag-validation: FAIL - tag {tag!r} ist nicht als "
+                  f"<name>-<semver> parsebar bzw. passt nicht zu "
+                  f"name={name!r} version={version!r}.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          print(f"tag-validation: OK - {tag!r} -> name={name} version={version}")
+          PY
+
+          python3 - "$GITHUB_WORKSPACE/index.json" "$version" "$tag" "$name" "$GITHUB_WORKSPACE/asset-hashes.txt" <<'PY'
           import json, sys, pathlib, re
           idx_path = pathlib.Path(sys.argv[1])
           version = sys.argv[2]
           tag = sys.argv[3]
+          name = sys.argv[4]
           hashes = {}
-          for line in pathlib.Path(sys.argv[4]).read_text().splitlines():
+          for line in pathlib.Path(sys.argv[5]).read_text().splitlines():
               if not line.strip():
                   continue
               sha, fn = line.split()[0], line.split()[-1].lstrip("*")
               hashes[fn] = sha
 
           def retag(url: str, tag: str) -> str:
-              # Ersetzt das Tag-Segment nach .../releases/download/<tag>/ bzw.
-              # .../releases/tag/<tag> und lässt Host/Pfad/Dateinamen unberührt.
+              # Ersetzt NUR das Tag-Segment nach .../releases/download/<tag>/
+              # bzw. .../releases/tag/<tag> und lässt Host/Pfad/Dateinamen
+              # unberührt.
               return re.sub(r"(/releases/(?:download|tag)/)[^/]+", r"\1" + tag, url, count=1)
 
           data = json.loads(idx_path.read_text(encoding="utf-8"))
-          for plugin in data.get("plugins", []):
-              for plat, info in plugin.get("platforms", {}).items():
-                  if "url" in info:
-                      info["url"] = retag(info["url"], tag)
-                  fn = info["url"].rsplit("/", 1)[-1]
-                  if fn in hashes:
-                      info["sha256"] = hashes[fn]
-              plugin["latest_version"] = version
-              if "changelog" in plugin:
-                  plugin["changelog"] = retag(plugin["changelog"], tag)
+
+          # NUR der Katalog-Eintrag des Plugins, zu dem das Release gehoert,
+          # darf veraendert werden. Ein Release mit Tag 'hello-1.0.0' darf
+          # einem zweiten Eintrag (z. B. 'wiki') weder latest_version noch
+          # URL-Tag noch changelog stempeln; sonst ist die Datei nicht mehr aus
+          # EINER Quelle konsistent. Deshalb gezielter Zugriff statt Schleife
+          # ueber alle Eintraege.
+          matches = [p for p in data.get("plugins", []) if p.get("name") == name]
+          if len(matches) != 1:
+              print(
+                  f"index-sync: FAIL - erwarte genau einen Katalog-Eintrag "
+                  f"fuer name={name!r}, gefunden: {len(matches)}.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          plugin = matches[0]
+
+          for plat, info in plugin.get("platforms", {}).items():
+              if "url" in info:
+                  info["url"] = retag(info["url"], tag)
+              fn = info["url"].rsplit("/", 1)[-1]
+              # sha256 bleibt ueber den Dateinamen auf genau dieses Plugin
+              # beschraenkt: nur Hashes, die zu den Asset-Dateinamen dieses
+              # Plugins gehoeren, werden uebernommen.
+              if fn in hashes:
+                  info["sha256"] = hashes[fn]
+          plugin["latest_version"] = version
+          if "changelog" in plugin:
+              plugin["changelog"] = retag(plugin["changelog"], tag)
           idx_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
           PY
 
