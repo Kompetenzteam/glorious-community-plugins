@@ -145,3 +145,85 @@ jobs:
           echo "::notice::sha256=${{ steps.asset.outputs.sha256 }}"
           echo "::notice::pubkey=${{ steps.asset.outputs.pubkey }}"
           echo "::notice::asset=${{ steps.asset.outputs.asset }}"
+
+  # Aktualisiert index.json automatisch mit den ECHTEN Hashes der veröffentlichten
+  # Release-Assets. Damit kann der in index.json gepflegte sha256 nicht mehr von den
+  # ausgelieferten Bytes abdriften (die frühere Ursache für Fehl-Hashes: Hashes wurden
+  # aus lokalen Builds eingetragen, während die CI neu gebaut hat).
+  #
+  # Die Dateien werden nach dem Upload erneut aus dem Release heruntergeladen und
+  # gehasht — gemessen wird also exakt das, was ein Nutzer später herunterlädt.
+  update-index:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main (Katalog-Zweig)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Plugin-Name und Version aus dem Tag ableiten
+        id: tag
+        shell: bash
+        env:
+          PLUGIN_NAME: ${{ github.ref_name }}
+        run: |
+          name="${PLUGIN_NAME%-*}"
+          version="${PLUGIN_NAME##*-}"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: index.json auf die Release-Asset-Hashes pinnen
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          name="${{ steps.tag.outputs.name }}"
+          version="${{ steps.tag.outputs.version }}"
+          tag="${{ github.ref_name }}"
+          echo "Sync ${name} ${version} aus Release ${tag} nach index.json"
+
+          # Asset-Hashes direkt aus dem veröffentlichten Release gewinnen.
+          tmp="$(mktemp -d)"
+          gh release download "$tag" --repo "${{ github.repository }}" --dir "$tmp" --clobber
+          (cd "$tmp" && sha256sum *.glorious-plugin > "$GITHUB_WORKSPACE/asset-hashes.txt")
+          cat "$GITHUB_WORKSPACE/asset-hashes.txt"
+
+          # index.json deterministisch aktualisieren (nur sha256 + latest_version/changelog).
+          python3 - "$GITHUB_WORKSPACE/index.json" "$version" "$GITHUB_WORKSPACE/asset-hashes.txt" <<'PY'
+          import json, sys, pathlib
+          idx_path = pathlib.Path(sys.argv[1])
+          version = sys.argv[2]
+          hashes = {}
+          for line in pathlib.Path(sys.argv[3]).read_text().splitlines():
+              if not line.strip():
+                  continue
+              sha, fn = line.split()[0], line.split()[-1].lstrip("*")
+              hashes[fn] = sha
+          data = json.loads(idx_path.read_text(encoding="utf-8"))
+          for plugin in data.get("plugins", []):
+              for plat, info in plugin.get("platforms", {}).items():
+                  fn = info["url"].rsplit("/", 1)[-1]
+                  if fn in hashes:
+                      info["sha256"] = hashes[fn]
+              plugin["latest_version"] = version
+          idx_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+          PY
+
+      - name: index.json committen und pushen
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- index.json; then
+            echo "index.json ist bereits aktuell — kein Commit nötig."
+            exit 0
+          fi
+          git diff -- index.json
+          git config user.name "glorious-ci[bot]"
+          git config user.email "glorious-ci[bot]@users.noreply.github.com"
+          git add index.json
+          git commit -m "chore(index): sync ${{ steps.tag.outputs.name }} ${{ steps.tag.outputs.version }} sha256 to published release assets"
+          git push origin HEAD:main
