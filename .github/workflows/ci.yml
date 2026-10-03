@@ -1,0 +1,108 @@
+# CI gate for the Glorious Community Plugin Repository.
+#
+# This repository is the reference for plugin authors: every Go module under
+# tools/ and plugins/ must build, vet and test clean, gofmt must be clean and
+# index.json must satisfy the catalog contract -- on every pull request and on
+# every push to main. Fail-closed: no step is allowed to swallow a failure.
+#
+# Runners are self-hosted (act_runner, ubuntu + windows), so every action is
+# pinned to a fixed major version and POSIX syntax always sets `shell: bash`
+# explicitly: a Windows step without `shell:` runs in Windows PowerShell 5.1,
+# where `$(...)`, `[[ ]]` and `test -z` behave differently or not at all.
+#
+# EU AI Act Art. 50 - created with AI assistance.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# One run per ref; newer pushes cancel in-flight runs of the same ref so
+# parallel PR runs cannot overtake each other.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Matrix job: build/vet/test every Go module in the repository.
+  # The module list is maintained here (not discovered at runtime) so a newly
+  # added module is an explicit, reviewable change to this file.
+  # ---------------------------------------------------------------------------
+  ci:
+    name: ci (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - tools/build-plugin
+          - plugins/hello
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./... -count=1
+
+  # ---------------------------------------------------------------------------
+  # gofmt gate. The whole repository is scanned from the root in one pass.
+  # `*.go text eol=lf` in .gitattributes keeps checkouts LF-only on every
+  # runner; without it, Windows CRLF checkouts would flag every .go file.
+  # ---------------------------------------------------------------------------
+  gofmt:
+    name: gofmt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: plugins/hello/go.mod
+
+      - name: gofmt (fail on unformatted .go files)
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt: FAIL - the following files are not gofmt-formatted:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+          echo "gofmt: OK"
+
+  # ---------------------------------------------------------------------------
+  # index.json validation, offline only (no network, no release-asset fetch).
+  # ---------------------------------------------------------------------------
+  index:
+    name: index.json
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate index.json against the catalog contract
+        shell: bash
+        run: python3 scripts/check_index.py index.json

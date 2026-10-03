@@ -1,0 +1,4 @@
+# Normalize line endings for Go sources so the gofmt gate in CI is stable
+# across self-hosted runners (Windows PowerShell/CRLF checkouts would otherwise
+# make every .go file fail `gofmt -l`). Committed with the CI introduction.
+*.go text eol=lf
