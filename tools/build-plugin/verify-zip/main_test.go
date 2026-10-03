@@ -19,6 +19,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"glorious-community/tools/build-plugin/internal/pluginmanifest"
 )
 
 // writeArchive builds a minimal .glorious-plugin containing manifest.json plus
@@ -28,7 +30,7 @@ import (
 func writeArchive(t *testing.T, path, binaryName, entrypoint string, priv ed25519.PrivateKey, tamper bool) {
 	t.Helper()
 
-	m := manifest{
+	m := pluginmanifest.Manifest{
 		Name:       "hello",
 		Version:    "1.0.0",
 		Entrypoint: entrypoint,

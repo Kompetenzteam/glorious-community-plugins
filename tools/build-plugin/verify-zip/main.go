@@ -21,17 +21,9 @@ import (
 	"io"
 	"os"
 	"strings"
-)
 
-type manifest struct {
-	Name        string   `json:"name"`
-	Version     string   `json:"version"`
-	Description string   `json:"description"`
-	Entrypoint  string   `json:"entrypoint"`
-	Permissions []string `json:"permissions,omitempty"`
-	License     string   `json:"license,omitempty"`
-	Signature   string   `json:"signature,omitempty"`
-}
+	"glorious-community/tools/build-plugin/internal/pluginmanifest"
+)
 
 func main() {
 	os.Exit(verifyMain(os.Args[1:]))
@@ -70,7 +62,7 @@ func verifyMain(args []string) int {
 
 	clean := m
 	clean.Signature = ""
-	canonical, err := json.Marshal(clean)
+	canonical, err := clean.CanonicalJSON()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "verify-zip: canonical manifest: %v\n", err)
 		return 2
@@ -122,8 +114,8 @@ func loadPublicKey(path string) (ed25519.PublicKey, error) {
 }
 
 // readManifest returns the archive members and the decoded manifest.json.
-func readManifest(path string) ([]string, manifest, error) {
-	var m manifest
+func readManifest(path string) ([]string, pluginmanifest.Manifest, error) {
+	var m pluginmanifest.Manifest
 	zr, err := zip.OpenReader(path)
 	if err != nil {
 		return nil, m, err
