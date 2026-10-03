@@ -129,16 +129,55 @@ den `index.json`. Der Builder akzeptiert PKCS#8-PEM und Base64 davon.
 
 CI läuft auf **Gitea** (Source of Truth, `http://localhost:3000/...`). Die Schritte
 „Release-Assets hochladen" und „index.json committen und pushen" brauchen daher ein
-`GITEA_TOKEN` (Repo-Scope `write:repository`, Repo-Admin für Releases):
+`GIT_TOKEN` (Repo-Scope `write:repository`, Repo-Admin für Releases):
 
 ```bash
-gh secret set GITEA_TOKEN --repo Kompetenzteam/glorious-community-plugins < token.txt   # GitHub-CLI gegen Gitea
+gh secret set GIT_TOKEN --repo Kompetenzteam/glorious-community-plugins < token.txt   # GitHub-CLI gegen Gitea
 ```
 
 bzw. Gitea-UI wie oben. Ohne dieses Secret bricht der Publish-Schritt mit
-`::error::Publish-Secret GITEA_TOKEN fehlt` ab. Ein reiner `github.token` reicht
+`::error::Publish-Secret GIT_TOKEN fehlt` ab. Ein reiner `github.token` reicht
 **nicht**: das Release und `index.json` liegen auf Gitea, GitHub ist nur der
 Push-Mirror.
+
+> **Reservierte Secret-Namen:** Gitea lehnt `GITEA_TOKEN` und `GITHUB_TOKEN` mit
+> HTTP 400 `invalid variable or secret name` ab — sie gehören zum reservierten
+> Namensraum der Plattform. Deshalb heißt das Secret `GIT_TOKEN`.
+
+### GitHub-Mirror-Secret (für den Release-Asset-Mirror)
+
+Der GitHub-Repo ist ein **Push-Mirror, der nur Git-Refs spiegelt — keine Releases**.
+Damit die in `index.json` hinterlegten Download-URLs (GitHub) nicht ins Leere zeigen,
+spiegelt der Job `mirror-github` die auf Gitea erzeugten Release-Assets nach GitHub
+und `verify-consistency` prüft anschließend die Hash-Gleichheit
+(`Gitea-Asset == GitHub-Asset == index.json`). Dafür ist ein **Classic GitHub-PAT**
+mit den Scopes `repo` + `workflow` nötig, abgelegt als Secret `GH_PAT`:
+
+```bash
+gh secret set GH_PAT --repo Kompetenzteam/glorious-community-plugins < github-pat.txt   # GitHub-CLI gegen Gitea
+```
+
+bzw. Gitea-UI: *Repository → Settings → Actions → Secrets → New secret*, Name `GH_PAT`.
+Ohne dieses Secret bricht der Job `mirror-github` mit
+`::error::Secret GH_PAT fehlt oder ist leer` ab (fail-closed) — die Pipeline wird rot,
+`update-index` und `verify-consistency` laufen nicht. `GITHUB_PAT` ist in Gitea
+ebenfalls reserviert (HTTP 400), daher `GH_PAT`.
+
+### Pflicht-Secrets im Überblick
+
+| Secret        | Pflicht | Zweck                                             | Herkunft                                                |
+|---------------|---------|---------------------------------------------------|---------------------------------------------------------|
+| `SIGNING_KEY` | ja      | Ed25519-Key zum Signieren der `manifest.json`     | `openssl genpkey -algorithm ed25519`                    |
+| `GIT_TOKEN`   | ja      | Release + `index.json`-Push auf Gitea             | Gitea-Token, Scope `write:repository`                   |
+| `GH_PAT`      | ja      | GitHub-Mirror der Release-Assets                  | Classic-PAT, Scopes `repo` + `workflow`                 |
+
+Fehlt eines davon, wird die Pipeline **rot** (fail-closed), es läuft kein Teil-Release.
+
+### Workflow-Reihenfolge
+
+`release` (Matrix-Build + Signatur + Gitea-Release) → `mirror-github` (Gitea-Assets →
+GitHub) → `update-index` (pinnt `index.json` auf die ausgelieferten Gitea-Bytes) →
+`verify-consistency` (Gitea == GitHub == `index.json`, sonst rot).
 
 ## 5. Lokal bauen (ohne CI)
 

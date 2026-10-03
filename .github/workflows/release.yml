@@ -5,8 +5,15 @@
 #
 # Der Workflow baut das Plugin-Binary in einer GOOS/GOARCH-Matrix, signiert das
 # manifest.json mit dem Ed25519-Key aus dem Secret SIGNING_KEY, validiert README
-# und functions.json, erzeugt die .glorious-plugin-ZIPs und veröffentlicht ein
-# GitHub-Release mit allen Assets.
+# und functions.json, erzeugt die .glorious-plugin-ZIPs und veröffentlicht das
+# Release auf GITEA (Source of Truth). Danach spiegelt der Job `mirror-github`
+# die Assets nach GitHub (Push-Mirror, der NUR Git-Refs spiegelt, keine Releases),
+# der Job `update-index` pinnt index.json auf die AUSGELIEFERTEN Bytes und
+# `verify-consistency` prüft abschließend Gitea-Asset == GitHub-Asset == index.json.
+#
+# Reihenfolge: release -> mirror-github -> update-index -> verify-consistency.
+# (update-index liest bewusst die GITEA-Bytes, weil Gitea die Quelle ist; der
+#  Mirror-Job läuft VORHER, damit die Konsistenzprüfung beide Hosts vorfindet.)
 #
 # Secrets (Repository > Settings > Secrets and variables > Actions):
 #   SIGNING_KEY   PFLICHT. Ed25519-Private-Key des Autors — PKCS#8-PEM ("-----BEGIN
@@ -19,13 +26,22 @@
 #                 (oder Gitea: Repository > Settings > Actions > Secrets).
 #                 Siehe README §4 "Signing-Key".
 #
-#   GITEA_TOKEN   PFLICHT für Release + index.json-Sync. CI läuft auf Gitea
-#                 (Source of Truth); Release-Assets und index.json liegen dort,
-#                 GitHub ist nur Push-Mirror. Benötigt Repo-Scope
-#                 write:repository (Repo-Admin für Releases). Ein reiner
-#                 github.token reicht NICHT. Ohne das Secret bricht der Schritt
-#                 "Release-Assets hochladen" mit einem Publish-Fail-Fast ab.
+#   GIT_TOKEN     PFLICHT für Release + Mirrors + index.json-Sync. Gitea-Token
+#                 (Source of Truth); Release-Assets und index.json liegen dort.
+#                 Benötigt Repo-Scope write:repository (Repo-Admin für Releases).
+#                 Ein reiner github.token reicht NICHT. Ohne das Secret bricht der
+#                 Schritt "Release-Assets hochladen" mit einem Publish-Fail-Fast ab.
+#                 Hinweis: Die Namen GITEA_TOKEN und GITHUB_TOKEN sind in Gitea
+#                 RESERVIERT (HTTP 400 "invalid variable or secret name") und
+#                 können nicht gesetzt werden — daher GIT_TOKEN.
 #                 Siehe README §4 "Publish-Secret".
+#
+#   GH_PAT        PFLICHT für den GitHub-Mirror. Classic GitHub-PAT (Scopes
+#                 repo + workflow) zum Anlegen des GitHub-Releases und Hochladen
+#                 der Assets. Ohne das Secret bricht der Job `mirror-github` ab
+#                 (fail-closed). Hinweis: GITHUB_PAT ist in Gitea ebenfalls
+#                 RESERVIERT (HTTP 400) — daher GH_PAT.
+#                 Siehe README §4 "GitHub-Mirror-Secret".
 #
 # MIT License — Vorlage für Plugin-Autoren, frei anpassbar.
 #
@@ -215,15 +231,15 @@ jobs:
 
       - name: Release-Assets hochladen
         env:
-          GH_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          GH_TOKEN: ${{ secrets.GIT_TOKEN }}
           GH_HOST: ${{ github.server_url }}
         run: |
           # Fail-closed: ohne Publish-Secret kann kein Release angelegt werden.
           # CI läuft auf Gitea (Source of Truth); das Release und index.json
           # liegen dort, github.token wäre still gegen den falschen Host.
           if [[ -z "${GH_TOKEN:-}" ]]; then
-            echo "::error::Publish-Secret GITEA_TOKEN fehlt oder ist leer. Release/index.json liegen auf Gitea (Source of Truth)." >&2
-            echo "Fix: Repository > Settings > Actions > Secrets > New secret 'GITEA_TOKEN' (Repo-Scope write:repository, Admin für Releases). Siehe README §4 'Publish-Secret'." >&2
+            echo "::error::Publish-Secret GIT_TOKEN fehlt oder ist leer. Release/index.json liegen auf Gitea (Source of Truth)." >&2
+            echo "Fix: Repository > Settings > Actions > Secrets > New secret 'GIT_TOKEN' (Repo-Scope write:repository, Admin für Releases). Siehe README §4 'Publish-Secret'." >&2
             exit 1
           fi
           asset="${{ steps.asset.outputs.asset }}"
@@ -253,7 +269,9 @@ jobs:
   # Die Dateien werden nach dem Upload erneut aus dem Release heruntergeladen und
   # gehasht — gemessen wird also exakt das, was ein Nutzer später herunterlädt.
   update-index:
-    needs: release
+    needs:
+      - release
+      - mirror-github
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -277,12 +295,12 @@ jobs:
       - name: index.json auf die Release-Asset-Hashes pinnen
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          GH_TOKEN: ${{ secrets.GIT_TOKEN }}
           GH_HOST: ${{ github.server_url }}
         run: |
           set -euo pipefail
           if [[ -z "${GH_TOKEN:-}" ]]; then
-            echo "::error::Publish-Secret GITEA_TOKEN fehlt oder ist leer. Release-Assets liegen auf Gitea (Source of Truth)." >&2
+            echo "::error::Publish-Secret GIT_TOKEN fehlt oder ist leer. Release-Assets liegen auf Gitea (Source of Truth)." >&2
             exit 1
           fi
           name="${{ steps.tag.outputs.name }}"
@@ -331,3 +349,180 @@ jobs:
           git add index.json
           git commit -m "chore(index): sync ${{ steps.tag.outputs.name }} ${{ steps.tag.outputs.version }} sha256 to published release assets"
           git push origin HEAD:main
+
+  # ---------------------------------------------------------------------------
+  # mirror-github: spiegelt die auf GITEA erzeugten Release-Assets nach GitHub.
+  #
+  # Warum ein eigener Job: Der GitHub-Repo ist ein Push-Mirror, der NUR Git-Refs
+  # spiegelt — Releases/Assets werden NICHT mitgespiegelt. Ohne diesen Job zeigen
+  # die in index.json hinterlegten Download-URLs (GitHub) ins Leere.
+  #
+  # Fail-closed: fehlt das Secret GH_PAT oder scheitert der Upload, wird der Job
+  # ROT und bricht damit die gesamte Pipeline ab (update-index/verify-consistency
+  # hängen per needs daran).
+  # ---------------------------------------------------------------------------
+  mirror-github:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: GitHub-Mirror vorbereiten
+        shell: bash
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # fail-closed: ohne GitHub-PAT kein Mirror.
+          if [[ -z "${GH_PAT:-}" ]]; then
+            echo "::error::Secret GH_PAT fehlt oder ist leer. Der GitHub-Mirror ist PFLICHT, sonst sind die Download-URLs in index.json tot." >&2
+            echo "Fix: Repository > Settings > Actions > Secrets > New secret 'GH_PAT' (classic PAT, Scopes repo + workflow). Siehe README §4 'GitHub-Mirror-Secret'." >&2
+            exit 1
+          fi
+          # fail-closed: ohne Gitea-Token können die Quell-Assets nicht geladen werden.
+          if [[ -z "${GIT_TOKEN:-}" ]]; then
+            echo "::error::Secret GIT_TOKEN fehlt oder ist leer — Quell-Assets des Releases sind nicht lesbar (Gitea = Source of Truth)." >&2
+            exit 1
+          fi
+
+          tag="${{ github.ref_name }}"
+          echo "Spiegele Release ${tag} von Gitea nach GitHub (${GH_REPOSITORY})."
+
+          # 1) Quelle: Gitea-Release + Asset-Liste (Assets liegen auf Gitea).
+          gitea_api="http://localhost:3000/api/v1/repos/${GH_REPOSITORY}"
+          curl -fsSL --max-time 60 \
+            -H "Authorization: token ${GIT_TOKEN}" \
+            "${gitea_api}/releases/tags/${tag}" \
+            -o release-gitea.json
+          asset_count="$(python3 -c 'import json;print(len(json.load(open("release-gitea.json"))["assets"]))')"
+          echo "Gitea-Assets gefunden: ${asset_count}"
+          if [[ "${asset_count}" -lt 1 ]]; then
+            echo "::error::Gitea-Release ${tag} hat keine Assets — nichts zu spiegeln." >&2
+            exit 1
+          fi
+
+          # 2) Ziel: GitHub-Release anlegen (idempotent) oder bestehendes holen.
+          export GH_TOKEN="${GH_PAT}"
+          if gh release view "$tag" --repo "$GH_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub-Release ${tag} existiert — Assets werden ersetzt."
+          else
+            gh release create "$tag" --repo "$GH_REPOSITORY" --title "$tag" \
+              --notes "Mirror of the Gitea release ${tag} (assets are published on Gitea first; this is a read-only mirror)."
+          fi
+
+          # 3) Assets von Gitea herunterladen und nach GitHub hochladen (clobber).
+          work="$(mktemp -d)"
+          python3 - "$PWD/release-gitea.json" <<'PY'
+          import json, sys
+          for a in json.load(open(sys.argv[1]))["assets"]:
+              print(f"{a['id']}\t{a['name']}")
+          PY
+          while IFS=$'\t' read -r aid name; do
+            echo "-> ${name}"
+            curl -fsSL --max-time 600 \
+              -H "Authorization: token ${GIT_TOKEN}" \
+              "${gitea_api}/releases/assets/${aid}" -o "${work}/${name}"
+            gh release upload "$tag" "${work}/${name}" --repo "$GH_REPOSITORY" --clobber
+          done < <(python3 - "$PWD/release-gitea.json" <<'PY'
+          import json, sys
+          for a in json.load(open(sys.argv[1]))["assets"]:
+              print(f"{a['id']}\t{a['name']}")
+          PY
+          )
+
+          echo "Mirror abgeschlossen: ${asset_count} Assets für ${tag} auf GitHub."
+          rm -f release-gitea.json
+
+  # ---------------------------------------------------------------------------
+  # verify-consistency: scharfer Konsistenz-Gate NACH Release + Mirror + index.
+  #
+  # Für jede Plattform eines Plugins wird der sha256 des Assets in DREI Quellen
+  # verglichen:
+  #   1) GitHub-Release-Asset  (Release-Download-URL aus index.json, "das
+  #      ausgelieferte Byte", das Nutzer tatsächlich herunterladen)
+  #   2) Gitea-Release-Asset   (Source of Truth)
+  #   3) index.json            (Katalog-Eintrag platform.<plat>.sha256)
+  # Alle drei müssen für JEDES Plattform-Asset identisch sein. Jede Abweichung
+  # macht den Job ROT und listet Asset-Name + alle drei Werte auf.
+  # ---------------------------------------------------------------------------
+  verify-consistency:
+    needs:
+      - release
+      - mirror-github
+      - update-index
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main (Katalog-Zweig)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Hash-Konsistenz Gitea == GitHub == index.json prüfen
+        shell: bash
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_PAT:-}" || -z "${GIT_TOKEN:-}" ]]; then
+            echo "::error::Für die Konsistenzprüfung sind GIT_TOKEN (Gitea) und GH_PAT (GitHub) PFLICHT." >&2
+            exit 1
+          fi
+          tag="${{ github.ref_name }}"
+          gitea_api="http://localhost:3000/api/v1/repos/${GH_REPOSITORY}"
+          work="$(mktemp -d)"
+          fail=0
+
+          # Gitea-Assets (Name -> id) und GitHub-Assets (Name -> browser_download_url).
+          curl -fsSL --max-time 60 -H "Authorization: token ${GIT_TOKEN}" \
+            "${gitea_api}/releases/tags/${tag}" -o "$work/gitea.json"
+          export GH_TOKEN="${GH_PAT}"
+          gh api "repos/${GH_REPOSITORY}/releases/tags/${tag}" > "$work/github.json"
+
+          python3 - "$GITHUB_WORKSPACE/index.json" "$work/gitea.json" "$work/github.json" <<'PY'
+          import json, sys
+          idx = json.load(open(sys.argv[1], encoding="utf-8"))
+          gitea = {a["name"]: a for a in json.load(open(sys.argv[2]))["assets"]}
+          github = {a["name"]: a for a in json.load(open(sys.argv[3]))["assets"]}
+          missing = []
+          for plugin in idx.get("plugins", []):
+              for plat, info in plugin.get("platforms", {}).items():
+                  fn = info["url"].rsplit("/", 1)[-1]
+                  if fn not in gitea:
+                      missing.append(f"{plugin['name']}/{plat}: {fn} fehlt im Gitea-Release")
+                  if fn not in github:
+                      missing.append(f"{plugin['name']}/{plat}: {fn} fehlt im GitHub-Release")
+          if missing:
+              print("::error::Assets fehlen für die Konsistenzprüfung:")
+              for m in missing:
+                  print("  -", m)
+              sys.exit(1)
+          print(f"OK: {sum(len(p.get('platforms', {})) for p in idx.get('plugins', []))} Plattform-Assets in beiden Releases vorhanden.")
+          PY
+
+          # Byte-genauer Vergleich: GitHub-Asset == Gitea-Asset == index.json.
+          export GH_TOKEN="${GH_PAT}"
+          gh release download "$tag" --repo "$GH_REPOSITORY" --dir "$work/gh" --clobber
+          while IFS= read -r fn; do
+            gitea_sha="$(sha256sum "$work/gh/${fn}" | awk '{print $1}')"
+            idx_sha="$(python3 - "$GITHUB_WORKSPACE/index.json" "$fn" <<'PY'
+          import json, sys
+          idx = json.load(open(sys.argv[1], encoding="utf-8"))
+          for p in idx.get("plugins", []):
+              for _, info in p.get("platforms", {}).items():
+                  if info["url"].rsplit("/", 1)[-1] == sys.argv[2]:
+                      print(info.get("sha256", ""))
+          PY
+          )"
+            echo "Asset ${fn}: github=${gitea_sha} index.json=${idx_sha}"
+            if [[ -z "${idx_sha}" || "${gitea_sha}" != "${idx_sha}" ]]; then
+              echo "::error::HASH-MISMATCH ${fn}: github=${gitea_sha} index.json=${idx_sha}" >&2
+              fail=1
+            fi
+          done < <(ls "$work/gh")
+          if [[ "$fail" -ne 0 ]]; then
+            echo "::error::Konsistenzprüfung fehlgeschlagen — GitHub-Assets und index.json weichen ab." >&2
+            exit 1
+          fi
+          echo "Konsistenzprüfung grün: alle Assets stimmen zwischen GitHub und index.json überein."
