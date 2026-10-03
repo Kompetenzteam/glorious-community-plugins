@@ -50,10 +50,22 @@ Vorlagen-Plugin — die minimale, lauffähige Struktur, die jedes Plugin mitbrin
   `options`, `group`, `hint`; max. 100 Felder pro Plugin).
 - **`README.md`** — Pflicht (maschinell validiert): ≥ 300 Zeichen und die Sektionen
   `## Beschreibung` + `## Berechtigungen`.
-- **Binary** — `main.go` ist eine Dummy-Implementierung: loggt beim Start
-  `hello-plugin: started (version 0.1.1)` und antwortet auf stdin-Eingabe `ping` mit
-  `pong`. Der Entrypoint im Manifest (`./plugin`) muss zum Binary-Namen im ZIP passen
-  (`--binary plugin.exe` → `plugin.exe` im ZIP, Entrypoint `./plugin.exe`).
+- **Binary** — `main.go` ist eine **vollständige Referenz-Implementierung des
+  Plugin-Vertrags** (Stand 1.0.0): Es lädt die vom Host provisionierte
+  mTLS-Identität, startet einen TLS-Listener auf `127.0.0.1:0` mit
+  `RequireAndVerifyClientCert`, registriert den `HandshakeService` (Ping +
+  Handshake2-Feature-Aushandlung) über `net/rpc` und meldet seine Adresse als
+  Ready-Zeile `GLO_PLUGIN_READY 127.0.0.1:<port>` auf stdout. Der Entrypoint im
+  Manifest muss exakt zum Binary-Namen im ZIP passen
+  (`--binary hello.exe` → `hello.exe` im ZIP, Entrypoint `./hello.exe`). Der Host
+  löst den Entrypoint wörtlich auf (keine `.exe`-Inferenz); der Release-Workflow
+  patcht dafür eine Manifest-Kopie je Plattform (`./hello` unter Unix,
+  `./hello.exe` unter Windows). **`build-plugin` erzwingt diese Gleichheit selbst
+  fail-closed** (`entryBase != binaryName` → Fehler, nicht bloß Warnung), damit
+  kein ZIP entsteht, das der Installer später nicht starten kann. Weil der
+  Workflow das Manifest **vor** dem Packen je Plattform patcht, blockiert das
+  keine legitimen Plattform-Patches. Ein Rezept für den manuellen ZIP-Bau ohne
+  Release-Workflow steht in §5.
 
 ## 3. index.json pflegen
 
@@ -66,8 +78,13 @@ Checkliste pro Plugin-Eintrag:
 2. `platforms.<key>` für jede gebaute Plattform: `url` auf das Release-Asset, `sha256`
    von `sha256sum <datei>.glorious-plugin` (64 Hex), `signer_pubkey` aus
    `build-plugin --print-pubkey` (Base64 des 32-Byte-Ed25519-Public-Keys).
-3. `latest_version` und `changelog` aktualisieren.
-4. Wohlgeformtheit prüfen: `python -m json.tool index.json`.
+3. `latest_version` und `changelog` aktualisieren. (Ab dem Tag-Release erledigt
+   der Job `update-index` das automatisch für `sha256`, `latest_version`,
+   `changelog` und die Tag-Segmente der Asset-`url`s — siehe §4
+   „Workflow-Reihenfolge“.)
+4. Wohlgeformtheit + Schema prüfen: `python scripts/check_index.py index.json`
+   (Exit 0 = gültig, sonst rot). Das ist auch der Check, den `ci.yml` für
+   `index.json` fährt.
 
 ## 4. Neues Plugin veröffentlichen
 
@@ -92,21 +109,116 @@ kopieren und anpassen):
    GitHub-Release mit allen `.glorious-plugin`-Assets.
 4. `index.json` mit den Assets aus dem Release aktualisieren (siehe §3) und committen.
 
-### Signing-Key
+### Signing-Key (PFLICHT-Secret)
 
-Der Ed25519-Private-Key wird als Repository-Secret `SIGNING_KEY` hinterlegt (Settings →
-Secrets and variables → Actions) und **niemals committet**:
+Der Ed25519-Private-Key **muss** als Repository-Secret `SIGNING_KEY` hinterlegt sein
+(Settings → Secrets and variables → Actions), sonst ist der Release-Weg gesperrt.
+Er wird **niemals committet**:
 
 ```bash
 openssl genpkey -algorithm ed25519 -out key.pem
 gh secret set SIGNING_KEY --repo Kompetenzteam/glorious-community-plugins < key.pem
 ```
 
+In Gitea (Source of Truth): *Repository → Settings → Actions → Secrets → New secret*,
+Name `SIGNING_KEY`, Wert = vollständiger Inhalt von `key.pem` (PEM oder Base64(PEM)).
+
+**Symptom bei fehlendem Secret:** der Workflow bricht im Schritt *„Signing-Key
+bereitstellen"* mit `::error::Repository-Secret SIGNING_KEY fehlt oder ist leer.`
+ab — **vor** jedem Matrix-Build. Früher zeigte sich dasselbe Problem erst spät im
+Schritt *„Plugin-ZIP bauen, validieren und signieren"* als kryptischer Fehler
+`build-plugin: signing key: Base64-Key hat 0 Bytes, gewünscht 64 (roh) oder 32 (Seed)`
+und riss alle drei Matrix-Beine mit. Der neue Fail-Fast ersetzt genau diesen Fall.
+
 Den öffentlichen Schlüssel (Base64) erhält man mit
 `build-plugin --print-pubkey --signing-key key.pem` — er kommt als `signer_pubkey` in
 den `index.json`. Der Builder akzeptiert PKCS#8-PEM und Base64 davon.
 
+### Publish-Secret (für Release + index.json-Sync)
+
+CI läuft auf **Gitea** (Source of Truth, `http://localhost:3000/...`). Die Schritte
+„Release-Assets hochladen" und „index.json committen und pushen" brauchen daher ein
+`GIT_TOKEN` (Repo-Scope `write:repository`, Repo-Admin für Releases):
+
+```bash
+gh secret set GIT_TOKEN --repo Kompetenzteam/glorious-community-plugins < token.txt   # GitHub-CLI gegen Gitea
+```
+
+bzw. Gitea-UI wie oben. Ohne dieses Secret bricht der Publish-Schritt mit
+`::error::Publish-Secret GIT_TOKEN fehlt` ab. Ein reiner `github.token` reicht
+**nicht**: das Release und `index.json` liegen auf Gitea, GitHub ist nur der
+Push-Mirror.
+
+> **Reservierte Secret-Namen:** Gitea lehnt `GITEA_TOKEN` und `GITHUB_TOKEN` mit
+> HTTP 400 `invalid variable or secret name` ab — sie gehören zum reservierten
+> Namensraum der Plattform. Deshalb heißt das Secret `GIT_TOKEN`.
+
+### GitHub-Mirror-Secret (für den Release-Asset-Mirror)
+
+Der GitHub-Repo ist ein **Push-Mirror, der nur Git-Refs spiegelt — keine Releases**.
+Damit die in `index.json` hinterlegten Download-URLs (GitHub) nicht ins Leere zeigen,
+spiegelt der Job `mirror-github` die auf Gitea erzeugten Release-Assets nach GitHub
+und `verify-consistency` prüft anschließend die Hash-Gleichheit
+(`Gitea-Asset == GitHub-Asset == index.json`). Dafür ist ein **Classic GitHub-PAT**
+mit den Scopes `repo` + `workflow` nötig, abgelegt als Secret `GH_PAT`:
+
+```bash
+gh secret set GH_PAT --repo Kompetenzteam/glorious-community-plugins < github-pat.txt   # GitHub-CLI gegen Gitea
+```
+
+bzw. Gitea-UI: *Repository → Settings → Actions → Secrets → New secret*, Name `GH_PAT`.
+Ohne dieses Secret bricht der Job `mirror-github` mit
+`::error::Secret GH_PAT fehlt oder ist leer` ab (fail-closed) — die Pipeline wird rot,
+`update-index` und `verify-consistency` laufen nicht. `GITHUB_PAT` ist in Gitea
+ebenfalls reserviert (HTTP 400), daher `GH_PAT`.
+
+### Pflicht-Secrets im Überblick
+
+| Secret        | Pflicht | Zweck                                             | Herkunft                                                |
+|---------------|---------|---------------------------------------------------|---------------------------------------------------------|
+| `SIGNING_KEY` | ja      | Ed25519-Key zum Signieren der `manifest.json`     | `openssl genpkey -algorithm ed25519`                    |
+| `GIT_TOKEN`   | ja      | Release + `index.json`-Push auf Gitea             | Gitea-Token, Scope `write:repository`                   |
+| `GH_PAT`      | ja      | GitHub-Mirror der Release-Assets                  | Classic-PAT, Scopes `repo` + `workflow`                 |
+
+Fehlt eines davon, wird die Pipeline **rot** (fail-closed), es läuft kein Teil-Release.
+
+### Workflow-Reihenfolge
+
+`release` (Matrix-Build + Signatur + Gitea-Release) → `mirror-github` (Gitea-Assets →
+GitHub) → `update-index` (leitet `sha256`, `latest_version`, `changelog` **und** die
+Tag-Segmente der Asset-`url`s konsistent aus dem Release-Tag ab und pusht `index.json`
+auf `main`) → `verify-consistency` (Gitea == GitHub == `index.json`, sonst rot).
+
+### Runbook: `verify-consistency` ist rot
+
+`verify-consistency` vergleicht je Plattform-Asset **drei** Quellen:
+Gitea-Release-Asset (Source of Truth) == GitHub-Release-Asset == `index.json`. Der Job
+ist fail-closed und listet bei Abweichung `github=… index.json=…` bzw. die fehlenden
+Assets auf. Vorgehen, in dieser Reihenfolge:
+
+1. **Zuerst das Job-Log lesen.** Zwei Fehlerklassen:
+   - `Assets fehlen für die Konsistenzprüfung: <plugin>/<plat>: <datei> fehlt im
+     <Host>-Release` → ein Matrix-Bein hat kein Asset hochgeladen, oder `mirror-github`
+     hat es nicht gespiegelt.
+   - `HASH-MISMATCH <datei>: github=… index.json=…` → die Bytes weichen ab; fast immer
+     ist `index.json` veraltet oder wurde von Hand mit lokal gebauten Hashes gepflegt.
+2. **`index.json` prüfen und den Job neu anstoßen.** Der häufigste Fall ist ein alter
+   `index.json`. Weil `update-index` ihn automatisch aus den Release-Assets neu
+   schreibt, genügt ein Re-Run des Workflows für denselben Tag (Gitea → Actions → den
+   Lauf öffnen → *Re-run all jobs*); das läuft `update-index` erneut und danach
+   `verify-consistency`. Kein Handeditieren von Hashes.
+3. **Fehlendes Asset beheben.** Fehlt ein Plattform-Asset im Gitea-Release, den Matrix-
+   Build prüfen (`release`-Job) und den Tag neu auslösen. Fehlt es nur auf GitHub,
+   `mirror-github` und das Secret `GH_PAT` prüfen (siehe oben, fail-closed).
+4. **Erstlauf-Sonderfall.** Existiert zum Tag noch **kein** Release (z. B. weil noch
+   kein Tag gepusht wurde) bzw. fehlen die Secrets, ist rot **erwartet** und kein
+   Regressionssignal — dann zuerst Secret/Tag klären (§ unten), nicht `index.json`.
+5. **Nie** den Gate abschwächen oder Hashes von Hand „passend“ eintragen: der Sinn des
+   Jobs ist, dass `index.json` exakt die ausgelieferten Bytes beschreibt.
+
 ## 5. Lokal bauen (ohne CI)
+
+### 5a. Mit dem Builder-Tool (empfohlen)
 
 ```bash
 cd tools/build-plugin
@@ -115,14 +227,106 @@ go build -o build-plugin .
   --manifest ../../plugins/hello/manifest.json \
   --functions ../../plugins/hello/functions.json \
   --readme ../../plugins/hello/README.md \
-  --binary ../../plugins/hello/plugin.exe \
-  --out hello-0.1.1-windows-amd64.glorious-plugin \
+  --binary ../../plugins/hello/hello.exe \
+  --out hello-1.0.0-windows-amd64.glorious-plugin \
   --signing-key key.pem
 ```
 
 Details zu allen Flags: `./build-plugin -h`.
 
-## 6. Verbote
+### 5b. Manuelles ZIP-Rezept (ohne GitHub-Release)
+
+Wer das `.glorious-plugin` von Hand bauen will, muss die Archivstruktur und den
+Entrypoint **exakt** treffen — der Installer prüft beides fail-closed:
+
+**Regeln**
+
+1. Das ZIP enthält am **Root** (nicht in einem Unterordner!) genau:
+   `manifest.json`, `functions.json`, `README.md` und das Binary. Der
+   Manifest-`entrypoint` löst **wörtlich** relativ zum Plugin-Arbeitsverzeichnis
+   auf — es gibt **keine** `.exe`-Inferenz.
+2. Der **Binary-Name im ZIP-Root muss der Entrypoint sein**:
+   - Windows: Binary heißt `hello.exe`, Entrypoint `"./hello.exe"`.
+   - Unix (linux/darwin): Binary heißt `hello`, Entrypoint `"./hello"`.
+   Ein einzelnes Manifest deckt beide nicht ab — deshalb je Plattform eine
+   Manifest-Kopie mit passendem `entrypoint` verwenden (so macht es auch
+   `release.yml`).
+3. Das Binary muss **ausführbar** sein (`chmod +x`) bzw. im ZIP das Modus-Bit
+   `0755` tragen; alle anderen Einträge `0644`.
+4. Das Manifest muss **signiert** sein (`signature` = Base64-Ed25519 über das
+   kanonische JSON mit geleertem `signature`-Feld). Ohne gültige Signatur
+   lehnt der Installer ab. Zum Signieren entweder `build-plugin` mit
+   `--signing-key` nutzen oder die Signatur wie in
+   `tools/build-plugin/main.go` (`canonicalManifestJSON` + `signManifest`)
+   nachbauen.
+5. Grenzwerte: ≤ 50 MiB unkomprimiert, ≤ 1000 Einträge, <= 50 MiB pro Eintrag,
+   **keine** Symlinks, **keine** Pfad-Escapes (`..`, absolute Pfade,
+   Backslashes). Optional liegen Icon/Assets unter `assets/`.
+
+**Beispiel (Unix, mit `zip`)**
+
+```bash
+# In einem Baustein-Verzeichnis mit manifest.json/functions.json/README.md/hello
+zip -X hello-1.0.0-linux-amd64.glorious-plugin \
+  manifest.json functions.json README.md hello
+```
+
+**Beispiel (Windows, mit PowerShell `Compress-Archive`)**
+
+```powershell
+Compress-Archive -Path manifest.json,functions.json,README.md,hello.exe `
+  -DestinationPath hello-1.0.0-windows-amd64.glorious-plugin
+```
+
+> Achtung: `Compress-Archive` setzt keine Unix-Modus-Bits. Der Installer behandelt
+> das Binary anhand des `entrypoint`-Namens und der Plattform; der offizielle Weg
+> bleibt der Builder (§5a), der die Modus-Bits korrekt setzt. Für reproduzierbare,
+> signierte Artefakte daher immer `build-plugin` verwenden.
+
+Den `sha256` des fertigen ZIP (`sha256sum <datei>` bzw. `Get-FileHash`) und den
+`signer_pubkey` (`build-plugin --print-pubkey`) in `index.json` eintragen (§3).
+
+## 6. Eine neue Sprache ergänzen (i18n)
+
+Die Referenz-Vorlage `hello` liefert ihre Meldungen über ein minimales
+Nachrichten-System in [`plugins/hello/internal/i18n`](./plugins/hello/internal/i18n)
+aus. Alle Meldungen laufen über **Message-Keys**, nie über literale Strings im
+Code:
+
+- `internal/i18n/messages.go` deklariert die Keys (Typ `Key`, z. B.
+  `KeyIdentityMismatch`) und die Tabelle `messages` (`Locale → Key → string`).
+- `i18n.Message(key)` liefert die Meldung für die aktive Locale; fehlt die
+  Übersetzung, wird der Key selbst zurückgegeben (sichtbar in Logs statt leer).
+- Die aktive Locale liest das Paket aus der Host-Umgebung
+  (`GLORIOUS_PLUGIN_LOCALE`, Werte `de` / `en`; **Default `de`**, unbekannte
+  Werte fallen auf den Default zurück).
+
+**So ergänzt man eine Sprache (Beispiel `fr`):**
+
+1. In `internal/i18n/messages.go` eine `Locale`-Konstante ergänzen
+   (`LocaleFR Locale = "fr"`), sie in `ParseLocale` aufnehmen und in
+   `Locales()` zurückgeben; dann alle Keys in der `messages`-Tabelle
+   übersetzen:
+
+   ```go
+   LocaleFR: {
+       KeyIdentityMismatch: "l'identité ne correspond pas au plugin attendu",
+       // ... jeden weiteren Key ebenfalls
+   },
+   ```
+
+2. Keinen Key vergessen: `messages_test.go` prüft über `Locales()` und
+   `Keys()`, dass jede Locale jeden Key (nicht-leer) enthält — die neue Locale
+   wird also automatisch mitgeprüft, sobald sie in `Locales()` steht.
+3. Aufrufe im Code bleiben unverändert (`i18n.Message(KeyIdentityMismatch)`) —
+   es wird **kein** Literal hartkodiert.
+4. Im Plugin-`README.md` dokumentieren, welche Locales unterstützt werden.
+
+> Hinweis: Sprache der **Meldungen** (dieser Abschnitt) ist unabhängig von der
+> Sprache der **Doku**. Die Vorlage hält Meldungen in `internal/i18n` zentral;
+> die Doku darf DE oder EN sein, wo sie es ist.
+
+## 7. Verbote
 
 - Keine Secrets irgendeiner Art im ZIP oder im Repo (`key.pem` ist per `.gitignore`
   ausgeschlossen).

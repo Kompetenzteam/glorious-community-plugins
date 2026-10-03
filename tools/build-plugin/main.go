@@ -1,26 +1,31 @@
-// Command build-plugin ist der Community-Plugin-Builder der Glorious Platform:
-// Es validiert manifest.json, functions.json und README.md, signiert das
-// Manifest mit einem Ed25519-Key und verpackt alles in ein
-// .glorious-plugin-ZIP-Archiv, das der Marketplace-Installer akzeptiert.
+// EU AI Act transparency notice (Art. 50, Regulation (EU) 2024/1689): this
+// source file was authored with AI assistance (backend-developer agent) as
+// part of the community reference-plugin 1.0.0 work and is subject to the
+// repository's standard human code review before release.
 //
-// Das Tool ist ein eigenständiges Modul (nur Go-Stdlib) und liegt in
-// marketplace/community/tools/build-plugin — es wird vom CI-Workflow-Template
-// (marketplace/community/.github/workflows/release.yml) und lokal von
-// Plugin-Autoren verwendet.
+// Command build-plugin is the Glorious Platform community plugin builder:
+// it validates manifest.json, functions.json and README.md, signs the
+// manifest with an Ed25519 key and packs everything into a
+// .glorious-plugin ZIP archive that the marketplace installer accepts.
 //
-// Die Validierungs- und Signaturlogik spiegelt die App-Verträge exakt wider:
+// The tool is a standalone module (Go stdlib only) and lives in
+// marketplace/community/tools/build-plugin — it is used by the CI workflow
+// template (marketplace/community/.github/workflows/release.yml) and locally
+// by plugin authors.
+//
+// The validation and signing logic mirrors the app contracts exactly:
 //
 //   - Manifest: internal/plugins/manifest.go (ParseManifest, canonicalJSON,
-//     SignManifest) — dieselbe Struct-Reihenfolge, dieselben JSON-Tags,
-//     Signatur über das kanonische JSON ohne signature-Feld.
+//     SignManifest) — same struct order, same JSON tags, signature over the
+//     canonical JSON without the signature field.
 //   - functions.json: internal/plugins/manifest.go (ParseFunctionsFile,
-//     DefaultLimits 50 Objekte / 10 Aktionen) + internal/rbac (System-Aktionen
-//     und -Rollen).
-//   - README: internal/pluginstore/readme.go (ValidateReadme: >= 300 Runes,
-//     Sektionen "## Beschreibung" und "## Berechtigungen").
-//   - Archiv: Plan §3 — ZIP mit manifest.json, functions.json, README.md,
-//     dem Binary und optional assets/, <= 50 MiB unkomprimiert, <= 1000
-//     Einträge, keine Symlinks, keine Pfad-Escapes.
+//     DefaultLimits 50 objects / 10 actions, validateProfileFields with the
+//     profile-field limits) + internal/rbac (system actions and roles).
+//   - README: internal/pluginstore/readme.go (ValidateReadme: >= 300 runes,
+//     sections "## Beschreibung" and "## Berechtigungen").
+//   - Archive: Plan §3 — ZIP with manifest.json, functions.json, README.md,
+//     the binary and optional assets/, <= 50 MiB uncompressed, <= 1000
+//     entries, no symlinks, no path escapes.
 package main
 
 import (
@@ -40,32 +45,55 @@ import (
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"glorious-community/tools/build-plugin/internal/pluginmanifest"
 )
 
-// Version ist die Tool-Version, ausgegeben mit --version.
+// Version is the tool version, printed with --version.
 const version = "1.0.0"
 
-// Archiv- und Contract-Grenzwerte — Spiegel der App-Konstanten:
+// Archive and contract limits — mirrors of the app constants:
 // internal/plugins/manifest.go (50/10), internal/pluginstore/store.go
-// (50 MiB) und Plan §3 (1000 Einträge).
+// (50 MiB) and Plan §3 (1000 entries).
 const (
 	contractFunctionsVersion = "1.0.0"
 	maxPluginObjects         = 50
 	maxObjectActions         = 10
 	minReadmeRunes           = 300
-	maxArchiveSize           = 50 << 20 // 50 MiB unkomprimierter Inhalt
-	maxFileSize              = 50 << 20 // 50 MiB pro Eintrag
+	maxArchiveSize           = 50 << 20 // 50 MiB uncompressed content
+	maxFileSize              = 50 << 20 // 50 MiB per entry
 	maxArchiveEntries        = 1000
+
+	// Profile-field contract limits (functions.json "profile_fields") — exact
+	// mirrors of internal/plugins/manifest.go. Text lengths are counted in
+	// runes (UTF-8-safe, so umlauts count as one character).
+	maxProfileFieldTextLen    = 200
+	maxProfileFieldOptions    = 50
+	maxProfileFieldOptionLen  = 100
+	maxProfileFieldsPerPlugin = 100
 )
 
-// knownActions ist das System-Aktionsset (internal/rbac, AllActions).
+// Known profile-field types (internal/plugins/manifest.go ProfileFieldType*).
+const (
+	profileFieldTypeText     = "text"
+	profileFieldTypeTextarea = "textarea"
+	profileFieldTypeNumber   = "number"
+	profileFieldTypeSelect   = "select"
+)
+
+// profileFieldNamePattern is the allowed field-name format (max 64 chars):
+// lowercase letter/digit first, then lowercase letters, digits, "_" or "-"
+// — identical to internal/plugins/manifest.go.
+var profileFieldNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+
+// knownActions is the system action set (internal/rbac, AllActions).
 var knownActions = []string{"read", "create", "update", "delete", "execute", "manage", "review", "grant", "write"}
 
-// knownRoles ist das System-Rollenset (internal/rbac, AllRoleNames).
+// knownRoles is the system role set (internal/rbac, AllRoleNames).
 var knownRoles = []string{"admin", "user", "operator", "auditor", "plugin_reviewer"}
 
-// allowedLicenses ist die Marketplace-Lizenz-Allowlist
-// (internal/pluginstore/install.go), case-insensitiv.
+// allowedLicenses is the marketplace license allowlist
+// (internal/pluginstore/install.go), case-insensitive.
 var allowedLicenses = map[string]bool{
 	"mit":          true,
 	"apache-2.0":   true,
@@ -74,34 +102,45 @@ var allowedLicenses = map[string]bool{
 	"mpl-2.0":      true,
 }
 
-// Namens- und Versionsformate — identisch zu internal/plugins/manifest.go.
+// Name and version formats — identical to internal/plugins/manifest.go.
 var (
 	pluginNamePattern    = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 	pluginVersionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 )
 
-// Manifest beschreibt ein Plugin — Struct-Reihenfolge und JSON-Tags exakt wie
-// internal/plugins/manifest.go, damit die kanonische JSON-Serialisierung byte-
-// identisch zur App ist und Signaturen wechselseitig verifizierbar sind.
-type Manifest struct {
-	Name        string   `json:"name"`
-	Version     string   `json:"version"`
-	Description string   `json:"description"`
-	Entrypoint  string   `json:"entrypoint"`
-	Permissions []string `json:"permissions,omitempty"`
-	License     string   `json:"license,omitempty"`
-	Signature   string   `json:"signature,omitempty"`
-}
+// Manifest describes a plugin — struct order and JSON tags exactly like
+// internal/plugins/manifest.go, so that the canonical JSON serialization is
+// byte-identical to the app and signatures are mutually verifiable. The type
+// is shared with verify-zip via internal/pluginmanifest to avoid a silent
+// duplicate of the manifest model across the two tools.
+type Manifest = pluginmanifest.Manifest
 
-// FunctionsFile ist der RBAC-Permission-Contract (functions.json) — exakt wie
-// internal/plugins/manifest.go.
+// FunctionsFile is the RBAC permission contract (functions.json) — exactly
+// like internal/plugins/manifest.go, including the optional profile_fields
+// section.
 type FunctionsFile struct {
 	Version string           `json:"version"`
 	Objects []FunctionObject `json:"objects"`
+	// ProfileFields is the mirror image of the host's profile_fields contract
+	// (internal/plugins/manifest.go FunctionsFile.ProfileFields) — optional.
+	ProfileFields []ProfileFieldSpec `json:"profile_fields,omitempty"`
 }
 
-// FunctionObject ist ein einzelnes Permission-Objekt (Bare-Name ohne "plugin."
-// Präfix; die volle Namespace wird von der App zur Registrierungszeit gebaut).
+// ProfileFieldSpec is a single plugin profile field (functions.json
+// "profile_fields") — mirror of internal/plugins/manifest.go ProfileFieldSpec:
+// Name (machine key), Label (display text), Type, Options (select only),
+// Group (section) and Hint (help text).
+type ProfileFieldSpec struct {
+	Name    string   `json:"name"`
+	Label   string   `json:"label"`
+	Type    string   `json:"type"`
+	Options []string `json:"options,omitempty"`
+	Group   string   `json:"group,omitempty"`
+	Hint    string   `json:"hint,omitempty"`
+}
+
+// FunctionObject is a single permission object (bare name without the
+// "plugin." prefix; the full namespace is built by the app at registration time).
 type FunctionObject struct {
 	Name                   string              `json:"name"`
 	Description            string              `json:"description,omitempty"`
@@ -109,14 +148,14 @@ type FunctionObject struct {
 	DefaultRolePermissions map[string][]string `json:"default_role_permissions,omitempty"`
 }
 
-// archiveEntry ist eine Datei im Ziel-ZIP mit ihrem Eintragsnamen und Modus.
+// archiveEntry is a file in the target ZIP with its entry name and mode.
 type archiveEntry struct {
 	name string
 	data []byte
 	mode fs.FileMode
 }
 
-// stringSliceFlag erlaubt wiederholte Flags (--asset a --asset b).
+// stringSliceFlag allows repeated flags (--asset a --asset b).
 type stringSliceFlag []string
 
 func (s *stringSliceFlag) String() string { return strings.Join(*s, ",") }
@@ -132,7 +171,7 @@ func main() {
 	}
 }
 
-// run kapselt die CLI-Logik (testbar ohne Prozessstart).
+// run encapsulates the CLI logic (testable without starting a process).
 func run(args []string) error {
 	fs := flag.NewFlagSet("build-plugin", flag.ContinueOnError)
 	var (
@@ -189,7 +228,7 @@ func run(args []string) error {
 		return nil
 	}
 
-	// Pflichtfelder der Build-Pipeline.
+	// Mandatory fields of the build pipeline.
 	for flagName, p := range map[string]string{
 		"--manifest":  manifestPath,
 		"--functions": functionsPath,
@@ -202,7 +241,7 @@ func run(args []string) error {
 		}
 	}
 
-	// 1. Manifest lesen, validieren und signieren.
+	// 1. Read, validate and sign the manifest.
 	manifestData, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return fmt.Errorf("read manifest: %w", err)
@@ -215,7 +254,7 @@ func run(args []string) error {
 		return err
 	}
 
-	// 2. functions.json gegen den RBAC-Contract validieren (Limits 50/10).
+	// 2. Validate functions.json against the RBAC contract (limits 50/10).
 	functionsData, err := os.ReadFile(functionsPath)
 	if err != nil {
 		return fmt.Errorf("read functions.json: %w", err)
@@ -224,7 +263,7 @@ func run(args []string) error {
 		return err
 	}
 
-	// 3. README gegen die Mindestanforderungen validieren.
+	// 3. Validate the README against the minimum requirements.
 	readmeData, err := os.ReadFile(readmePath)
 	if err != nil {
 		return fmt.Errorf("read README.md: %w", err)
@@ -233,7 +272,7 @@ func run(args []string) error {
 		return err
 	}
 
-	// 4. Binary prüfen (Pflicht-Eintrag, der Entrypoint startet es).
+	// 4. Check the binary (mandatory entry, started by the entrypoint).
 	binaryData, err := os.ReadFile(binaryPath)
 	if err != nil {
 		return fmt.Errorf("read binary: %w", err)
@@ -243,13 +282,16 @@ func run(args []string) error {
 		return errors.New("binary: ungültiger Dateiname")
 	}
 
-	// Warnung, wenn der Manifest-Entrypoint nicht zum Binary-Namen passt.
+	// Fail-closed: the manifest entrypoint must match the binary name in the
+	// archive, otherwise the installer cannot start it. The release workflow
+	// patches manifest.build.json per platform BEFORE packing, so a mismatch
+	// here is always a real authoring bug, never a legitimate platform patch.
 	entryBase := filepath.Base(strings.TrimPrefix(m.Entrypoint, "./"))
 	if entryBase != binaryName {
-		fmt.Fprintf(os.Stderr, "build-plugin: Warnung: Entrypoint %q passt nicht zum Binary-Namen %q im Archiv\n", m.Entrypoint, binaryName)
+		return fmt.Errorf("entrypoint %q does not match the binary name %q in the archive (rename the binary or fix manifest.json entrypoint)", m.Entrypoint, binaryName)
 	}
 
-	// 5. Einträge zusammenstellen (Reihenfolge wie Plan §3).
+	// 5. Assemble the entries (order as in Plan §3).
 	entries := []archiveEntry{
 		{name: "manifest.json", data: mustMarshal(m), mode: 0o644},
 		{name: "functions.json", data: functionsData, mode: 0o644},
@@ -257,7 +299,7 @@ func run(args []string) error {
 		{name: binaryName, data: binaryData, mode: 0o755},
 	}
 
-	// 6. Optionales Icon unter assets/.
+	// 6. Optional icon under assets/.
 	if iconPath != "" {
 		iconData, err := os.ReadFile(iconPath)
 		if err != nil {
@@ -291,10 +333,10 @@ func run(args []string) error {
 	return nil
 }
 
-// parseManifest validiert die Pflichtfelder des Manifests — analog
-// internal/plugins/manifest.go ParseManifest + validate, ergänzt um die
-// Lizenz-Allowlist (internal/pluginstore/install.go), da die App leere oder
-// unbekannte Lizenzen beim Installieren ablehnt.
+// parseManifest validates the manifest's mandatory fields — analogous to
+// internal/plugins/manifest.go ParseManifest + validate, extended by the
+// license allowlist (internal/pluginstore/install.go), because the app rejects
+// empty or unknown licenses on install.
 func parseManifest(data []byte) (*Manifest, error) {
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
@@ -324,19 +366,15 @@ func parseManifest(data []byte) (*Manifest, error) {
 	return &m, nil
 }
 
-// canonicalManifestJSON liefert das Manifest als deterministisches JSON mit
-// geleertem signature-Feld — das identische Muster wie internal/plugins/
-// manifest.go canonicalJSON: json.Marshal auf eine Struct-Kopie (feste
-// Feldreihenfolge); Maps/Raw-JSON dürfen in signierten Feldern nicht
-// vorkommen.
+// canonicalManifestJSON returns the manifest as deterministic JSON with the
+// signature field cleared — delegates to the shared type's CanonicalJSON so
+// packer and verifier are guaranteed to build the same bytes.
 func canonicalManifestJSON(m *Manifest) ([]byte, error) {
-	cleaned := *m
-	cleaned.Signature = ""
-	return json.Marshal(cleaned)
+	return m.CanonicalJSON()
 }
 
-// signManifest signiert das kanonische Manifest-JSON mit dem Ed25519-Key und
-// hinterlegt die Base64-Signatur (StdEncoding) im Manifest — exakt wie
+// signManifest signs the canonical manifest JSON with the Ed25519 key and
+// stores the Base64 signature (StdEncoding) in the manifest — exactly like
 // internal/plugins/manifest.go SignManifest.
 func signManifest(m *Manifest, priv ed25519.PrivateKey) error {
 	canonical, err := canonicalManifestJSON(m)
@@ -347,9 +385,9 @@ func signManifest(m *Manifest, priv ed25519.PrivateKey) error {
 	return nil
 }
 
-// parseFunctionsFile validiert den RBAC-Contract gegen die Default-Limits
-// (50 Objekte, 10 Aktionen) — analog internal/plugins/manifest.go
-// ParseFunctionsFile mit DefaultLimits.
+// parseFunctionsFile validates the RBAC contract against the default limits
+// (50 objects, 10 actions) — analogous to internal/plugins/manifest.go
+// ParseFunctionsFile with DefaultLimits.
 func parseFunctionsFile(data []byte) (*FunctionsFile, error) {
 	var ff FunctionsFile
 	if err := json.Unmarshal(data, &ff); err != nil {
@@ -358,11 +396,11 @@ func parseFunctionsFile(data []byte) (*FunctionsFile, error) {
 	if ff.Version != contractFunctionsVersion {
 		return nil, fmt.Errorf("functions.json: Vertragsversion %q nicht unterstützt (gewünscht %q)", ff.Version, contractFunctionsVersion)
 	}
-	if len(ff.Objects) == 0 {
-		return nil, errors.New("functions.json: mindestens ein Objekt erforderlich")
-	}
 	if len(ff.Objects) > maxPluginObjects {
 		return nil, fmt.Errorf("functions.json: %d Objekte überschreiten das Maximum von %d", len(ff.Objects), maxPluginObjects)
+	}
+	if len(ff.Objects) == 0 && len(ff.ProfileFields) == 0 {
+		return nil, errors.New("functions.json: mindestens ein Objekt oder Profilfeld erforderlich")
 	}
 	seen := make(map[string]bool, len(ff.Objects))
 	for _, obj := range ff.Objects {
@@ -370,11 +408,79 @@ func parseFunctionsFile(data []byte) (*FunctionsFile, error) {
 			return nil, err
 		}
 	}
+	if err := validateProfileFields(ff.ProfileFields); err != nil {
+		return nil, err
+	}
 	return &ff, nil
 }
 
-// validateObject prüft ein Permission-Objekt gegen den Contract: Bare-Name
-// (kein Punkt), System-Aktionen, keine Wildcards außer admin, System-Rollen.
+// validateProfileFields checks the profile_fields section exactly against the
+// host contract (internal/plugins/manifest.go validateProfileFields): unique,
+// well-formed names; mandatory label with a text-length limit; known type;
+// select requires options (max 50, max 100 runes each), other types must not
+// carry options; bounded group/hint; field upper limit. Every message names
+// the 0-based field index so authors can find the line in the JSON quickly.
+func validateProfileFields(fields []ProfileFieldSpec) error {
+	if len(fields) > maxProfileFieldsPerPlugin {
+		return fmt.Errorf("functions.json: %d Profilfelder überschreiten das Maximum von %d", len(fields), maxProfileFieldsPerPlugin)
+	}
+	seen := make(map[string]bool, len(fields))
+	for i, pf := range fields {
+		if strings.TrimSpace(pf.Name) == "" {
+			return fmt.Errorf("functions.json: Profilfeld[%d]: name ist Pflicht", i)
+		}
+		if !profileFieldNamePattern.MatchString(pf.Name) {
+			return fmt.Errorf("functions.json: Profilfeld[%d]: name %q muss %s entsprechen", i, pf.Name, profileFieldNamePattern)
+		}
+		if seen[pf.Name] {
+			return fmt.Errorf("functions.json: Profilfeld[%d]: doppelter Feldname %q", i, pf.Name)
+		}
+		seen[pf.Name] = true
+
+		if strings.TrimSpace(pf.Label) == "" {
+			return fmt.Errorf("functions.json: Profilfeld[%d] (%s): label ist Pflicht", i, pf.Name)
+		}
+		if utf8.RuneCountInString(pf.Label) > maxProfileFieldTextLen {
+			return fmt.Errorf("functions.json: Profilfeld[%d] (%s): label überschreitet %d Zeichen", i, pf.Name, maxProfileFieldTextLen)
+		}
+		if utf8.RuneCountInString(pf.Group) > maxProfileFieldTextLen {
+			return fmt.Errorf("functions.json: Profilfeld[%d] (%s): group überschreitet %d Zeichen", i, pf.Name, maxProfileFieldTextLen)
+		}
+		if utf8.RuneCountInString(pf.Hint) > maxProfileFieldTextLen {
+			return fmt.Errorf("functions.json: Profilfeld[%d] (%s): hint überschreitet %d Zeichen", i, pf.Name, maxProfileFieldTextLen)
+		}
+
+		switch pf.Type {
+		case profileFieldTypeText, profileFieldTypeTextarea, profileFieldTypeNumber:
+			if len(pf.Options) > 0 {
+				return fmt.Errorf("functions.json: Profilfeld[%d] (%s): Typ %q darf keine options deklarieren", i, pf.Name, pf.Type)
+			}
+		case profileFieldTypeSelect:
+			if len(pf.Options) == 0 {
+				return fmt.Errorf("functions.json: Profilfeld[%d] (%s): select braucht mindestens eine Option", i, pf.Name)
+			}
+			if len(pf.Options) > maxProfileFieldOptions {
+				return fmt.Errorf("functions.json: Profilfeld[%d] (%s): %d Optionen überschreiten das Maximum von %d", i, pf.Name, len(pf.Options), maxProfileFieldOptions)
+			}
+			optSeen := make(map[string]bool, len(pf.Options))
+			for _, opt := range pf.Options {
+				if utf8.RuneCountInString(opt) > maxProfileFieldOptionLen {
+					return fmt.Errorf("functions.json: Profilfeld[%d] (%s): Option überschreitet %d Zeichen", i, pf.Name, maxProfileFieldOptionLen)
+				}
+				if optSeen[opt] {
+					return fmt.Errorf("functions.json: Profilfeld[%d] (%s): doppelte Option %q", i, pf.Name, opt)
+				}
+				optSeen[opt] = true
+			}
+		default:
+			return fmt.Errorf("functions.json: Profilfeld[%d] (%s): unbekannter Typ %q (erlaubt: text, textarea, number, select)", i, pf.Name, pf.Type)
+		}
+	}
+	return nil
+}
+
+// validateObject checks a permission object against the contract: bare name
+// (no dot), system actions, no wildcards except admin, system roles.
 func validateObject(o FunctionObject, seen map[string]bool) error {
 	if strings.TrimSpace(o.Name) == "" {
 		return errors.New("functions.json: Objektname ist Pflicht")
@@ -416,7 +522,7 @@ func validateObject(o FunctionObject, seen map[string]bool) error {
 		}
 		for _, act := range actions {
 			if act == "*" && role == "admin" {
-				continue // die einzige erlaubte Wildcard
+				continue // the only allowed wildcard
 			}
 			if strings.Contains(act, "*") {
 				return fmt.Errorf("functions.json: Wildcard %q für Rolle %q an Objekt %q nicht erlaubt", act, role, o.Name)
@@ -432,9 +538,9 @@ func validateObject(o FunctionObject, seen map[string]bool) error {
 	return nil
 }
 
-// validateReadme prüft die Mindestanforderungen (internal/pluginstore/
-// readme.go): >= 300 Runes (UTF-8-sicher) und beide Pflichtsektionen
-// case-insensitiv.
+// validateReadme checks the minimum requirements (internal/pluginstore/
+// readme.go): >= 300 runes (UTF-8 safe) and both mandatory sections
+// case-insensitively.
 func validateReadme(content string) error {
 	if runes := utf8.RuneCountInString(content); runes < minReadmeRunes {
 		return fmt.Errorf("README.md hat %d Zeichen, Minimum %d", runes, minReadmeRunes)
@@ -448,9 +554,9 @@ func validateReadme(content string) error {
 	return nil
 }
 
-// loadSigningKey liest den Ed25519-Key aus einer Datei. Akzeptiert werden
-// PKCS#8-PEM ("BEGIN PRIVATE KEY") sowie Base64 (StdEncoding) des rohen
-// 64-Byte-Private-Keys oder des 32-Byte-Seeds.
+// loadSigningKey reads the Ed25519 key from a file. Accepted are PKCS#8 PEM
+// ("BEGIN PRIVATE KEY") as well as Base64 (StdEncoding) of the raw 64-byte
+// private key or the 32-byte seed.
 func loadSigningKey(path string) (ed25519.PrivateKey, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -470,7 +576,7 @@ func loadSigningKey(path string) (ed25519.PrivateKey, error) {
 		}
 		return priv, nil
 	}
-	// Kein PEM: Base64 (StdEncoding) eines rohen Keys oder Seeds.
+	// No PEM: Base64 (StdEncoding) of a raw key or seed.
 	raw := strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\r' || r == ' ' || r == '\t' {
 			return -1
@@ -492,9 +598,9 @@ func loadSigningKey(path string) (ed25519.PrivateKey, error) {
 	}
 }
 
-// collectAssets liest ein Verzeichnis rekursiv und liefert Archiveinträge
-// unter assets/ (Forward-Slashes). Symlinks und Nicht-Regulärdateien werden
-// abgelehnt — der Installer verweigert Symlinks ohnehin (install.go).
+// collectAssets reads a directory recursively and returns archive entries
+// under assets/ (forward slashes). Symlinks and non-regular files are
+// rejected — the installer refuses symlinks anyway (install.go).
 func collectAssets(dir string) ([]archiveEntry, error) {
 	var entries []archiveEntry
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
@@ -534,9 +640,9 @@ func collectAssets(dir string) ([]archiveEntry, error) {
 	return entries, nil
 }
 
-// buildArchive schreibt die Einträge als ZIP (Deflate) und erzwingt die
-// Archiv-Grenzwerte: <= 1000 Einträge, <= 50 MiB pro Datei, <= 50 MiB
-// unkomprimierter Gesamtinhalt, keine Pfad-Escapes.
+// buildArchive writes the entries as a ZIP (deflate) and enforces the archive
+// limits: <= 1000 entries, <= 50 MiB per file, <= 50 MiB total uncompressed
+// content, no path escapes.
 func buildArchive(outPath string, entries []archiveEntry) error {
 	if len(entries) == 0 {
 		return errors.New("kein Archiveintrag")
@@ -573,16 +679,16 @@ func buildArchive(outPath string, entries []archiveEntry) error {
 		hdr.SetMode(e.mode)
 		w, err := zw.CreateHeader(hdr)
 		if err != nil {
-			_ = f.Close() // Best-Effort-Cleanup: der primäre Fehler wird zurückgegeben (G104)
+			_ = f.Close() // best-effort cleanup: the primary error is returned (G104)
 			return fmt.Errorf("zip: %w", err)
 		}
 		if _, err := w.Write(e.data); err != nil {
-			_ = f.Close() // Best-Effort-Cleanup: der primäre Fehler wird zurückgegeben (G104)
+			_ = f.Close() // best-effort cleanup: the primary error is returned (G104)
 			return fmt.Errorf("zip %q: %w", e.name, err)
 		}
 	}
 	if err := zw.Close(); err != nil {
-		_ = f.Close() // Best-Effort-Cleanup: der primäre Fehler wird zurückgegeben (G104)
+		_ = f.Close() // best-effort cleanup: the primary error is returned (G104)
 		return fmt.Errorf("zip close: %w", err)
 	}
 	if err := f.Close(); err != nil {
@@ -591,9 +697,9 @@ func buildArchive(outPath string, entries []archiveEntry) error {
 	return nil
 }
 
-// validateEntryName weist Pfad-Escapes zurück (Spiegel der Installer-Prüfung
-// validateEntryPath): keine absoluten Pfade, keine Backslashes, keine ".."-
-// Segmente, keine Leersegmente.
+// validateEntryName rejects path escapes (mirror of the installer check
+// validateEntryPath): no absolute paths, no backslashes, no ".." segments, no
+// empty segments.
 func validateEntryName(name string) error {
 	if name == "" {
 		return errors.New("leerer Archiveintragsname")
@@ -612,9 +718,9 @@ func validateEntryName(name string) error {
 	return nil
 }
 
-// mustMarshal serialisiert das (signierte) Manifest für den ZIP-Eintrag.
-// json.Marshal auf Structs ist deterministisch; der Fehlerpfad ist
-// unerreichbar (nur Strings/Slices im Struct).
+// mustMarshal serializes the (signed) manifest for the ZIP entry.
+// json.Marshal on structs is deterministic; the error path is unreachable
+// (only strings/slices in the struct).
 func mustMarshal(m *Manifest) []byte {
 	data, err := json.Marshal(m)
 	if err != nil {

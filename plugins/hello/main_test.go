@@ -1,3 +1,7 @@
+// EU AI Act transparency notice (Art. 50, Regulation (EU) 2024/1689): this
+// source file was authored with AI assistance (backend-developer agent) as
+// part of the hello 1.0.0 reference-plugin phase A work and is subject to the
+// repository's standard human code review before release.
 package main
 
 import (

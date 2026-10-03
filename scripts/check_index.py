@@ -21,6 +21,16 @@ from pathlib import Path
 # sha256 must be exactly 64 hex characters (see index.schema.md, asset level).
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
+# Release URLs carry the tag as a path segment:
+#   .../releases/download/<tag>/<file>  and  .../releases/tag/<tag>
+# The tag must belong to the SAME plugin as the catalog entry it sits in
+# (see index.schema.md, asset level: url -> releases/download/<tag>/...).
+# This is the gate against the update-index corruption where a release with
+# tag 'hello-1.0.0' stamped a foreign entry ('wiki') with hello's tag/version.
+_TAG_SEGMENT_RE = re.compile(r"/releases/(?:download|tag)/([^/]+)")
+# A valid release tag is '<name>-<semver>'.
+_TAG_RELEASE_RE = re.compile(r"^(.+)-([0-9]+\.[0-9]+\.[0-9]+)$")
+
 # Repository-level mandatory fields (format_version is checked separately).
 _REPO_REQUIRED = ("id", "name", "maintainer")
 # Plugin-level mandatory fields per the schema contract.
@@ -41,6 +51,27 @@ def _require_str(obj: dict, key: str, where: str, errors: list[str]) -> None:
         errors.append(f"{where}: missing required field '{key}'")
     elif not isinstance(obj[key], str) or not obj[key].strip():
         errors.append(f"{where}: field '{key}' must be a non-empty string")
+
+
+def _check_tag_belongs(plugin_name: str, url: str, where: str, errors: list[str]) -> None:
+    """A release tag segment in `url` must belong to `plugin_name`.
+
+    The tag is parsed as '<name>-<semver>'; the '<name>' part must equal the
+    catalog entry's own name. This catches cross-plugin corruption where an
+    update-index run stamped one plugin's tag onto another entry.
+    """
+    for tag in _TAG_SEGMENT_RE.findall(url):
+        m = _TAG_RELEASE_RE.match(tag)
+        if not m:
+            errors.append(
+                f"{where}: release tag segment '{tag}' is not '<name>-<semver>'"
+            )
+            continue
+        if m.group(1) != plugin_name:
+            errors.append(
+                f"{where}: release tag '{tag}' belongs to plugin "
+                f"'{m.group(1)}', not to catalog entry '{plugin_name}'"
+            )
 
 
 def validate(data: object) -> list[str]:
@@ -92,6 +123,15 @@ def validate(data: object) -> list[str]:
                 errors.append(
                     f"{awhere}: 'sha256' must be 64 hex characters"
                 )
+            url = asset.get("url")
+            if isinstance(url, str):
+                _check_tag_belongs(plugin.get("name", ""), url, awhere, errors)
+
+        # The changelog is usually the release-tag URL of THIS plugin; a foreign
+        # tag here is the same corruption class as a foreign asset-URL tag.
+        changelog = plugin.get("changelog")
+        if isinstance(changelog, str):
+            _check_tag_belongs(plugin.get("name", ""), changelog, f"{where}.changelog", errors)
 
     return errors
 

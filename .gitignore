@@ -3,6 +3,15 @@
 /plugins/*/plugin.exe
 /plugins/*/*.exe
 
+# hello-Referenz-Plugin: Go build -o hello erzeugt ein Binary ohne Endung
+# (Linux/macOS). Nur die Release-ZIPs gehören in den Branch.
+/plugins/hello/hello
+/plugins/hello/hello.exe
+
+# Pro-Matrix-Lauf gepatchte Manifest-Kopie (siehe .github/workflows/release.yml);
+# wird zur Laufzeit aus manifest.json erzeugt und nie committet.
+manifest.build.json
+
 # Signierte Plugin-ZIPs + lokale Release-Assets — liegen nur in GitHub Releases
 *.glorious-plugin
 /release-assets/

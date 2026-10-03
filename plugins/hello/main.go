@@ -1,57 +1,64 @@
-// Command hello ist das Vorlagen-Plugin der Glorious Platform.
+// EU AI Act transparency notice (Art. 50, Regulation (EU) 2024/1689): this
+// source file was authored with AI assistance (backend-developer agent) as
+// part of the hello 1.0.0 reference-plugin phase A work and is subject to the
+// repository's standard human code review before release.
 //
-// Es ist eine vollständige, lauffähige Referenz-Implementierung des
-// Plugin-Vertrags (kein Dummy): Das Plugin startet einen mTLS-gesicherten
-// net/rpc-Server auf 127.0.0.1:0, registriert den HandshakeService und
-// meldet seine RPC-Adresse über die Ready-Zeile auf stdout. Der Host
-// (internal/plugins/runtime.go) wartet auf genau diese Zeile, baut dann die
-// mTLS-Verbindung auf und ruft HandshakeService.Ping auf ("Ping-vor-Nutzung").
+// Command hello is the reference plugin of the Glorious Platform.
 //
-// # Vertrag (verifiziert gegen glorious-platform_v2, internal/plugins)
+// It is a complete, runnable reference implementation of the plugin contract
+// (not a stub): the plugin starts an mTLS-secured net/rpc server on
+// 127.0.0.1:0, registers the HandshakeService and announces its RPC address on
+// stdout via the ready line. The host (internal/plugins/runtime.go) waits for
+// exactly that line, then opens the mTLS connection and calls
+// HandshakeService.Ping ("ping before use").
 //
-//   - Listener: tls.Listen("tcp", "127.0.0.1:0", cfg) mit
+// # Contract (verified against glorious-platform_v2, internal/plugins)
+//
+//   - Listener: tls.Listen("tcp", "127.0.0.1:0", cfg) with
 //     ClientAuth = RequireAndVerifyClientCert, MinVersion TLS 1.2
-//     (mtls.go:320-330). GLORIOUS_PLUGIN_TLS_MIN_VERSION kann 1.3 fordern.
-//   - Trust anchor: CA-Pool aus GLORIOUS_PLUGIN_CA_PEM (base64-PEM,
+//     (mtls.go:320-330). GLORIOUS_PLUGIN_TLS_MIN_VERSION may demand 1.3.
+//   - Trust anchor: CA pool from GLORIOUS_PLUGIN_CA_PEM (base64 PEM,
 //     runtime.go:876).
-//   - Leaf-Identität (runtime.go:72-77, runtime_unix.go:32-37,
-//     runtime_windows.go): Windows transportiert Cert/Key als base64-PEM in
-//     GLORIOUS_PLUGIN_CERT_PEM / GLORIOUS_PLUGIN_KEY_PEM; Unix trägt in
-//     denselben Variablen die Pfade /proc/self/fd/4 (Cert) und
-//     /proc/self/fd/3 (Key), die das Plugin als Datei liest. Beide
-//     Transporte werden hier unterstützt.
+//   - Leaf identity (runtime.go:72-77, runtime_unix.go:32-37,
+//     runtime_windows.go): Windows transports cert/key as base64 PEM in
+//     GLORIOUS_PLUGIN_CERT_PEM / GLORIOUS_PLUGIN_KEY_PEM; Unix carries the
+//     paths /proc/self/fd/4 (cert) and /proc/self/fd/3 (key) in the same
+//     variables, which the plugin reads as files. Both transports are
+//     supported (see internal/config).
 //   - Handshake: rpc.NewServer() + RegisterName("HandshakeService", ...)
-//     (mtls.go:335). HandshakeService.Ping(PingRequest, *PingResponse) setzt
-//     resp.Version (mtls.go:283-286). Der Host akzeptiert die Versionen aus
-//     contract.AcceptedRPCVersions ("1.0", "1.1"); wir melden "1.0"
-//     (PluginRPCVersion, mtls.go:34) — die minimale, immer akzeptierte
-//     Protokollversion. Die Handshake2-Negotiation (1.1) ist optional und
-//     wird vom Host erst nach explizitem Opt-in genutzt.
-//   - Ready-Zeile auf STDOUT, exakt: "GLO_PLUGIN_READY 127.0.0.1:<port>"
-//     (pluginReadyPrefix == readyLinePrefix, runtime.go:94/162; gelesen in
-//     readReadyLine :1244, Grammatik in parseReadyLine :1069). Nur
-//     127.0.0.1/::1 und Port 1024-65535 werden akzeptiert
-//     (validatePluginListenAddr :899). Die Zeile wird erst nach dem
-//     erfolgreichen Start des Listeners gedruckt.
-//   - Fail-closed: fehlt eine benötigte Env-Variable, wird das klar
-//     geloggt (stderr) und der Prozess beendet sich mit Exit-Code != 0.
-//     Es gibt keine Defaults für Zertifikat/Schlüssel/CA.
+//     (mtls.go:335). Ping(PingRequest, *PingResponse) sets resp.Version
+//     (mtls.go:283-286) and is unchanged for backward compatibility. In
+//     addition the same service answers the negotiated Handshake2 method
+//     (see internal/handshake); the host is the CLIENT of Handshake2 and the
+//     plugin is its server.
+//   - Ready line on STDOUT, exactly: "GLO_PLUGIN_READY 127.0.0.1:<port>"
+//     (pluginReadyPrefix == readyLinePrefix, runtime.go:94/162; read in
+//     readReadyLine :1244, grammar in parseReadyLine :1069). Only
+//     127.0.0.1/::1 and port 1024-65535 are accepted
+//     (validatePluginListenAddr :899). The line is printed only after the
+//     listener has started successfully.
+//   - Fail-closed: when a required environment variable is missing, the
+//     reason is logged (stderr) and the process exits with a non-zero code.
+//     There are no defaults for certificate/key/CA material.
 //
-// # Zweiter Service
+// # Second service
 //
-// ContributionService.DescribeContributions ist im Host-Contract definiert
-// (internal/plugins/contract/handshake.go:113-138). Der Host hat in dieser
-// Version noch keine Aufrufstelle dafür (der Methodensatz ist laut Kommentar
-// Zeile 135-137 "deliberately empty in W1"). Wir registrieren den Service
-// dennoch mit einer vertragskonformen Implementierung, damit der Host ihn
-// ohne Änderung erreichen kann, sobald er ihn nutzt.
+// ContributionService.DescribeContributions is defined in the host contract
+// (internal/plugins/contract/handshake.go:113-138). This host version has no
+// call site for it yet (the method set is "deliberately empty in W1" per the
+// comment on lines 135-137). We still register the service with a
+// contract-conformant implementation so the host can reach it unchanged once
+// it uses it.
+//
+// # Messages
+//
+// Operator-facing messages are rendered in German or English via a small,
+// dependency-free lookup (internal/i18n); the locale comes from
+// GLORIOUS_PLUGIN_LOCALE and defaults to "de".
 package main
 
 import (
 	"crypto/tls"
-	"crypto/x509"
-	"encoding/base64"
-	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -60,9 +67,12 @@ import (
 	"net/rpc"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"syscall"
+
+	"glorious-community/plugins/hello/internal/config"
+	"glorious-community/plugins/hello/internal/handshake"
+	"glorious-community/plugins/hello/internal/i18n"
 )
 
 // rpcVersion ist die vom Plugin gemeldete RPC-Protokollversion. Sie muss in
@@ -78,18 +88,37 @@ const readyPrefix = "GLO_PLUGIN_READY"
 // (contract.PluginContributionVersion).
 const contributionVersion = "1.0.0"
 
-// Env-Vertrag (Spiegel von internal/plugins/runtime.go:72-77).
+// Environment variable names (owned by internal/config, which does the
+// parsing). They are kept here as named aliases so package-main call sites
+// read naturally; the values are identical to config's.
 const (
-	envCertPEM       = "GLORIOUS_PLUGIN_CERT_PEM"
-	envKeyPEM        = "GLORIOUS_PLUGIN_KEY_PEM"
-	envCAPEM         = "GLORIOUS_PLUGIN_CA_PEM"
-	envTLSMinVersion = "GLORIOUS_PLUGIN_TLS_MIN_VERSION"
+	envCertPEM       = config.EnvCertPEM
+	envKeyPEM        = config.EnvKeyPEM
+	envCAPEM         = config.EnvCAPEM
+	envTLSMinVersion = config.EnvTLSMinVersion
 )
 
-// HandshakeService ist der Ping-Handshake, den der Host vor jeder Nutzung
-// aufruft. Der registrierte Name muss EXAKT "HandshakeService" lauten
-// (mtls.go:335).
-type HandshakeService struct{}
+// tlsConfigFromEnv builds the server TLS configuration from the host-provided
+// variables. It delegates to internal/config so the parsing rules live in one
+// testable place; a missing required variable is an error (fail-closed).
+func tlsConfigFromEnv() (*tls.Config, error) {
+	return config.TLSFromEnv()
+}
+
+// tlsListen is a thin seam over tls.Listen so tests can observe the bind
+// without reaching into the TLS configuration.
+var tlsListen = func(cfg *tls.Config) (net.Listener, error) {
+	return tls.Listen("tcp", "127.0.0.1:0", cfg)
+}
+
+// HandshakeService is the handshake the host calls before any use. The
+// registered name must be EXACTLY "HandshakeService" (mtls.go:335). It carries
+// both the legacy Ping (unchanged, backward compatible) and the negotiated
+// Handshake2 method, whose implementation and request/reply contract live in
+// internal/handshake and are promoted onto this service by embedding.
+type HandshakeService struct {
+	handshake.Service
+}
 
 // PingRequest ist das leere Argument des Handshake-Ping.
 type PingRequest struct{}
@@ -161,17 +190,22 @@ func run() error {
 	}
 
 	rpcServer := rpc.NewServer()
-	// Exakter Registrierungsname laut Host-Vertrag (mtls.go:335).
-	if err := rpcServer.RegisterName("HandshakeService", HandshakeService{}); err != nil {
+	// Exact registration name per host contract (mtls.go:335). Register a
+	// POINTER: Handshake2 is promoted from *handshake.Service, and net/rpc
+	// only exposes pointer-receiver methods when the registered value is a
+	// pointer (a value registration would silently omit Handshake2 while still
+	// exposing the value-receiver Ping). HandshakeService embeds
+	// handshake.Service, so both Ping and Handshake2 land on this one service.
+	if err := rpcServer.RegisterName("HandshakeService", &HandshakeService{}); err != nil {
 		return fmt.Errorf("register HandshakeService: %w", err)
 	}
 	if err := rpcServer.RegisterName("ContributionService", ContributionService{}); err != nil {
 		return fmt.Errorf("register ContributionService: %w", err)
 	}
 
-	// tls.Listen bindet 127.0.0.1:0 (mtls.go:327) — die konkrete Adresse
-	// wird gleich bekanntgegeben.
-	listener, err := tls.Listen("tcp", "127.0.0.1:0", cfg)
+	// tls.Listen binds 127.0.0.1:0 (mtls.go:327) — the concrete address is
+	// announced right after.
+	listener, err := tlsListen(cfg)
 	if err != nil {
 		return fmt.Errorf("mtls listen: %w", err)
 	}
@@ -179,14 +213,14 @@ func run() error {
 
 	addr, ok := listener.Addr().(*net.TCPAddr)
 	if !ok {
-		return fmt.Errorf("unerwarteter Listener-Typ %T", listener.Addr())
+		return fmt.Errorf("unexpected listener type %T", listener.Addr())
 	}
 	if err := validateAnnouncedAddr(addr); err != nil {
 		return err
 	}
 
-	// Erst nach erfolgreichem Start des Listeners die Ready-Zeile drucken
-	// (Spec Annex §11.1.1 Schritt 5). Genau eine Adresse, exaktes Format.
+	// Only after the listener started successfully, print the ready line
+	// (Spec Annex §11.1.1 step 5). Exactly one address, exact format.
 	fmt.Printf("%s 127.0.0.1:%d\n", readyPrefix, addr.Port)
 
 	var wg sync.WaitGroup
@@ -196,20 +230,20 @@ func run() error {
 		serve(rpcServer, listener)
 	}()
 
-	// Geordnetes Herunterfahren bei SIGINT/SIGTERM (Unix). Auf Windows
-	// terminiert der Host den Prozess; der Kanal wird trotzdem abonniert,
-	// damit ein späterer Support der Signale ohne Änderung greift.
+	// Ordered shutdown on SIGINT/SIGTERM (Unix). On Windows the host
+	// terminates the process; the channel is still subscribed so later signal
+	// support works without change.
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
-	log.Printf("shutdown signal empfangen, beende")
+	log.Printf("%s", i18n.Message(i18n.KeyShutdown))
 	_ = listener.Close()
 	wg.Wait()
 	return nil
 }
 
-// serve nimmt mTLS-Verbindungen an und bedient jede in einer eigenen
-// Goroutine; ein geschlossener Listener beendet die Schleife.
+// serve accepts mTLS connections and serves each in its own goroutine; a closed
+// listener ends the loop.
 func serve(srv *rpc.Server, listener net.Listener) {
 	for {
 		conn, err := listener.Accept()
@@ -224,124 +258,14 @@ func serve(srv *rpc.Server, listener net.Listener) {
 	}
 }
 
-// validateAnnouncedAddr stellt sicher, dass wir nur eine Adresse ankündigen,
-// die der Host akzeptiert (validatePluginListenAddr, runtime.go:899):
-// loopback und Port 1024-65535.
+// validateAnnouncedAddr ensures we only announce an address the host accepts
+// (validatePluginListenAddr, runtime.go:899): loopback and port 1024-65535.
 func validateAnnouncedAddr(addr *net.TCPAddr) error {
 	if addr.IP == nil || !addr.IP.IsLoopback() {
-		return fmt.Errorf("listener nicht auf loopback (%v)", addr.IP)
+		return fmt.Errorf("%s: %v", i18n.Message(i18n.KeyListenerRejected), addr.IP)
 	}
 	if addr.Port < 1024 || addr.Port > 65535 {
-		return fmt.Errorf("listener-Port %d ausserhalb 1024-65535", addr.Port)
+		return fmt.Errorf("%s: port %d outside 1024-65535", i18n.Message(i18n.KeyListenerRejected), addr.Port)
 	}
 	return nil
-}
-
-// tlsConfigFromEnv baut die Server-TLS-Konfiguration ausschließlich aus den
-// vom Host provisionierten Variablen. Fehlt eine benötigte Variable, wird
-// ein Fehler zurückgegeben (fail-closed, keine Defaults).
-func tlsConfigFromEnv() (*tls.Config, error) {
-	certPEM, err := leafMaterial(envCertPEM)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", envCertPEM, err)
-	}
-	keyPEM, err := leafMaterial(envKeyPEM)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", envKeyPEM, err)
-	}
-	caPEM, err := caMaterial()
-	if err != nil {
-		return nil, err
-	}
-
-	cert, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		return nil, fmt.Errorf("leaf keypair: %w", err)
-	}
-
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caPEM) {
-		return nil, errors.New("CA-Pool: kein Zertifikat aus GLORIOUS_PLUGIN_CA_PEM lesbar")
-	}
-
-	minVersion, err := tlsMinVersion()
-	if err != nil {
-		return nil, err
-	}
-
-	return &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		ClientCAs:    pool,
-		MinVersion:   minVersion,
-	}, nil
-}
-
-// leafMaterial liest das Blattmaterial aus dem Transport, den der Host
-// plattformabhängig wählt. Der Wert ist entweder ein Pfad (Unix:
-// /proc/self/fd/3 bzw. /proc/self/fd/4, dann wird die Datei gelesen) oder
-// base64-kodiertes PEM (Windows). Beide Formen werden unterstützt; eine
-// fehlende Variable ist ein Fehler (fail-closed).
-func leafMaterial(envKey string) ([]byte, error) {
-	raw, ok := os.LookupEnv(envKey)
-	if !ok || strings.TrimSpace(raw) == "" {
-		return nil, errors.New("Umgebungsvariable fehlt")
-	}
-	return decodeLeafValue(raw)
-}
-
-// decodeLeafValue unterscheidet die beiden Transportformen: beginnt der Wert
-// mit "/" oder "./" (oder existiert schlicht als Datei), wird er als Pfad
-// behandelt (Unix-FD-Weg); sonst als base64-PEM (Windows-Weg).
-func decodeLeafValue(raw string) ([]byte, error) {
-	trimmed := strings.TrimSpace(raw)
-	if strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "./") {
-		data, err := os.ReadFile(trimmed)
-		if err != nil {
-			return nil, fmt.Errorf("PEM-Datei %q lesen: %w", trimmed, err)
-		}
-		return data, nil
-	}
-	decoded, err := base64.StdEncoding.DecodeString(trimmed)
-	if err != nil {
-		// Manche Setups liefern PEM im Klartext statt base64 — akzeptieren,
-		// aber nur wenn es tatsächlich ein PEM-Block ist.
-		if block, _ := pem.Decode([]byte(trimmed)); block != nil {
-			return []byte(trimmed), nil
-		}
-		return nil, fmt.Errorf("Wert ist weder Dateipfad noch base64-PEM: %w", err)
-	}
-	return decoded, nil
-}
-
-// caMaterial liest den CA-Trust-Anchor aus GLORIOUS_PLUGIN_CA_PEM
-// (base64-PEM, runtime.go:876). Keine Defaults.
-func caMaterial() ([]byte, error) {
-	raw, ok := os.LookupEnv(envCAPEM)
-	if !ok || strings.TrimSpace(raw) == "" {
-		return nil, fmt.Errorf("%s: Umgebungsvariable fehlt", envCAPEM)
-	}
-	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(raw))
-	if err != nil {
-		return nil, fmt.Errorf("%s: base64-Dekodierung fehlgeschlagen: %w", envCAPEM, err)
-	}
-	return decoded, nil
-}
-
-// tlsMinVersion liest GLORIOUS_PLUGIN_TLS_MIN_VERSION ("1.2"/"1.3"). Fehlt
-// die Variable, gilt TLS 1.2 als Host-Default (mtls.go:324). Ein unbekannter
-// Wert ist ein Fehler (fail-closed statt stiller Downgrade).
-func tlsMinVersion() (uint16, error) {
-	raw, ok := os.LookupEnv(envTLSMinVersion)
-	if !ok || strings.TrimSpace(raw) == "" {
-		return tls.VersionTLS12, nil
-	}
-	switch strings.TrimSpace(raw) {
-	case "1.2":
-		return tls.VersionTLS12, nil
-	case "1.3":
-		return tls.VersionTLS13, nil
-	default:
-		return 0, fmt.Errorf("%s: unbekannter Wert %q (erlaubt: 1.2, 1.3)", envTLSMinVersion, raw)
-	}
 }
