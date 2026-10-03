@@ -688,7 +688,7 @@ func buildArchive(outPath string, entries []archiveEntry) error {
 		}
 	}
 	if err := zw.Close(); err != nil {
-		_ = f.Close() // Best-Effort-Cleanup: der primäre Fehler wird zurückgegeben (G104)
+		_ = f.Close() // best-effort cleanup: the primary error is returned (G104)
 		return fmt.Errorf("zip close: %w", err)
 	}
 	if err := f.Close(); err != nil {
