@@ -2,7 +2,7 @@
   "name": "hello",
   "version": "0.1.2",
   "description": "Vorlagen-Plugin 'hello' für Plugin-Autoren: minimale, lauffähige Struktur eines Glorious-Plugins.",
-  "entrypoint": "./plugin",
+  "entrypoint": "./plugin.exe",
   "permissions": [],
   "license": "MIT"
 }
