@@ -523,10 +523,10 @@ func TestParseFunctionsFileProfileFieldErrors(t *testing.T) {
 	}
 
 	cases := []struct {
-		name     string
-		fields   []ProfileFieldSpec
-		want     string
-		wantIdx  bool // true wenn die Meldung einen Feldindex nennen MUSS
+		name    string
+		fields  []ProfileFieldSpec
+		want    string
+		wantIdx bool // true wenn die Meldung einen Feldindex nennen MUSS
 	}{
 		{"fehlender Feldname", []ProfileFieldSpec{{Label: "Ohne Name", Type: profileFieldTypeText}}, "name", true},
 		{"Name mit Großbuchstaben", []ProfileFieldSpec{{Name: "Favorite", Label: "X", Type: profileFieldTypeText}}, "name", true},
