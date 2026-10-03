@@ -51,8 +51,8 @@ func validFunctions() string {
 }`
 }
 
-// validReadme erfüllt die Mindestanforderungen: >= 300 Runes und beide
-// Pflichtsektionen (case-insensitiv geprüft).
+// validReadme satisfies the minimum requirements: >= 300 runes and both
+// mandatory sections (checked case-insensitively).
 func validReadme() string {
 	return `# Wiki-Plugin
 
@@ -78,7 +78,7 @@ greift nicht auf Benutzer-, Rollen- oder Systemdaten zu.
 `
 }
 
-// writeFile schreibt eine Fixture-Datei in ein Temp-Verzeichnis.
+// writeFile writes a fixture file into a temp directory.
 func writeFile(t *testing.T, dir, name, content string) string {
 	t.Helper()
 	p := filepath.Join(dir, name)
@@ -88,7 +88,7 @@ func writeFile(t *testing.T, dir, name, content string) string {
 	return p
 }
 
-// writeKeyPEM schreibt den privaten Key als PKCS#8-PEM und liefert ihn zurück.
+// writeKeyPEM writes the private key as PKCS#8 PEM and returns it.
 func writeKeyPEM(t *testing.T, dir string) (ed25519.PrivateKey, string) {
 	t.Helper()
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -106,7 +106,7 @@ func writeKeyPEM(t *testing.T, dir string) (ed25519.PrivateKey, string) {
 	return priv, p
 }
 
-// buildArgs baut die CLI-Argumente für run().
+// buildArgs builds the CLI arguments for run().
 func buildArgs(manifestPath, functionsPath, readmePath, binaryPath, outPath, keyPath string, extra ...string) []string {
 	args := []string{
 		"--manifest", manifestPath,
@@ -119,9 +119,9 @@ func buildArgs(manifestPath, functionsPath, readmePath, binaryPath, outPath, key
 	return append(args, extra...)
 }
 
-// verifyManifestSignature ist der eigene Verify des Tests: manifest.json aus
-// dem ZIP lesen, Base64-Signatur decodieren, kanonisches JSON (signature
-// geleert) nachbilden und mit ed25519.Verify gegen den Public-Key prüfen.
+// verifyManifestSignature is the test's own verify: read manifest.json from
+// the ZIP, decode the Base64 signature, rebuild the canonical JSON (signature
+// cleared) and check it with ed25519.Verify against the public key.
 func verifyManifestSignature(t *testing.T, zipPath string, pub ed25519.PublicKey) *Manifest {
 	t.Helper()
 	zr, err := zip.OpenReader(zipPath)
@@ -169,8 +169,7 @@ func verifyManifestSignature(t *testing.T, zipPath string, pub ed25519.PublicKey
 
 // --- Tests ------------------------------------------------------------------
 
-// (a) Gültige Eingaben → ZIP entsteht, Signatur verifizierbar, Grenzwerte
-// eingehalten.
+// (a) Valid inputs -> ZIP is created, signature verifiable, limits respected.
 func TestBuildValidArchive(t *testing.T) {
 	dir := t.TempDir()
 	priv, keyPath := writeKeyPEM(t, dir)
@@ -197,14 +196,14 @@ func TestBuildValidArchive(t *testing.T) {
 		t.Fatalf("ZIP entstand nicht: %v", err)
 	}
 
-	// Signatur verifizieren (eigener Verify, s. o.).
+	// Verify the signature (own verify, see above).
 	pub, _ := priv.Public().(ed25519.PublicKey)
 	m := verifyManifestSignature(t, outPath, pub)
 	if m.Name != "wiki" || m.Version != "1.2.0" {
 		t.Fatalf("Manifestinhalt falsch: %+v", m)
 	}
 
-	// Struktur des Archivs prüfen.
+	// Check the archive structure.
 	zr, err := zip.OpenReader(outPath)
 	if err != nil {
 		t.Fatalf("open archive: %v", err)
@@ -231,14 +230,14 @@ func TestBuildValidArchive(t *testing.T) {
 			t.Errorf("Eintrag %q fehlt im Archiv", name)
 		}
 	}
-	// Binary ist ausführbar markiert.
+	// The binary is marked executable.
 	for _, f := range zr.File {
 		if f.Name == "plugin" && f.Mode()&0o111 == 0 {
 			t.Errorf("Binary-Eintrag ist nicht ausführbar (mode %v)", f.Mode())
 		}
 	}
 
-	// (e) Grenzwerte: Einträge <= 1000, Gesamtgröße <= 50 MiB.
+	// (e) Limits: entries <= 1000, total size <= 50 MiB.
 	if len(zr.File) > maxArchiveEntries {
 		t.Errorf("%d Einträge überschreiten das Limit %d", len(zr.File), maxArchiveEntries)
 	}
@@ -247,7 +246,7 @@ func TestBuildValidArchive(t *testing.T) {
 	}
 }
 
-// (b) README fehlt → Fehler.
+// (b) README missing -> error.
 func TestBuildReadmeMissing(t *testing.T) {
 	dir := t.TempDir()
 	_, keyPath := writeKeyPEM(t, dir)
@@ -319,7 +318,7 @@ func TestBuildFunctionsTooManyObjects(t *testing.T) {
 	}
 }
 
-// (e) Eintrags-Limit: > 1000 Einträge → Fehler.
+// (e) Entry limit: > 1000 entries -> error.
 func TestBuildEntryLimitExceeded(t *testing.T) {
 	dir := t.TempDir()
 	_, keyPath := writeKeyPEM(t, dir)
@@ -330,7 +329,7 @@ func TestBuildEntryLimitExceeded(t *testing.T) {
 	binaryPath := writeFile(t, dir, "plugin", "MZ fake binary")
 	outPath := filepath.Join(dir, "wiki-1.2.0-linux-amd64.glorious-plugin")
 
-	// 1001 Asset-Dateien → zusammen mit den 4 Basiseinträgen > 1000.
+	// 1001 asset files -> together with the 4 base entries > 1000.
 	assetDir := filepath.Join(dir, "many")
 	if err := os.MkdirAll(assetDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -350,7 +349,7 @@ func TestBuildEntryLimitExceeded(t *testing.T) {
 	}
 }
 
-// (e) Größen-Limit: Binary > 50 MiB → Fehler.
+// (e) Size limit: binary > 50 MiB -> error.
 func TestBuildSizeLimitExceeded(t *testing.T) {
 	dir := t.TempDir()
 	_, keyPath := writeKeyPEM(t, dir)
@@ -375,7 +374,7 @@ func TestBuildSizeLimitExceeded(t *testing.T) {
 	}
 }
 
-// Signing-Key-Aufnahme: PEM (PKCS#8), Base64-roh und Base64-Seed.
+// Signing-key intake: PEM (PKCS#8), raw Base64 and seed Base64.
 func TestLoadSigningKey(t *testing.T) {
 	dir := t.TempDir()
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -383,7 +382,7 @@ func TestLoadSigningKey(t *testing.T) {
 		t.Fatalf("generate key: %v", err)
 	}
 
-	// PKCS#8-PEM.
+	// PKCS#8 PEM.
 	der, err := x509.MarshalPKCS8PrivateKey(priv)
 	if err != nil {
 		t.Fatalf("marshal pkcs8: %v", err)
@@ -397,7 +396,7 @@ func TestLoadSigningKey(t *testing.T) {
 		t.Fatalf("PEM-Key nicht geladen (err=%v, equal=%v)", err, got.Equal(priv))
 	}
 
-	// Base64 des rohen 64-Byte-Keys.
+	// Base64 of the raw 64-byte key.
 	rawPath := filepath.Join(dir, "key.b64")
 	if err := os.WriteFile(rawPath, []byte(base64.StdEncoding.EncodeToString(priv)), 0o600); err != nil {
 		t.Fatalf("write b64: %v", err)
@@ -407,7 +406,7 @@ func TestLoadSigningKey(t *testing.T) {
 		t.Fatalf("Base64-Key nicht geladen (err=%v, equal=%v)", err, got.Equal(priv))
 	}
 
-	// Base64 des 32-Byte-Seeds.
+	// Base64 of the 32-byte seed.
 	seedPath := filepath.Join(dir, "seed.b64")
 	if err := os.WriteFile(seedPath, []byte(base64.StdEncoding.EncodeToString(priv.Seed())), 0o600); err != nil {
 		t.Fatalf("write seed: %v", err)
@@ -417,7 +416,7 @@ func TestLoadSigningKey(t *testing.T) {
 		t.Fatalf("Seed-Key nicht geladen (err=%v, equal=%v)", err, got.Equal(priv))
 	}
 
-	// Unsinn → Fehler.
+	// Garbage -> error.
 	badPath := filepath.Join(dir, "bad.key")
 	if err := os.WriteFile(badPath, []byte("kein key"), 0o600); err != nil {
 		t.Fatalf("write bad: %v", err)
@@ -427,14 +426,14 @@ func TestLoadSigningKey(t *testing.T) {
 	}
 }
 
-// Manifest-Validierung: Formate und Lizenz.
+// Manifest validation: formats and license.
 func TestParseManifestValidation(t *testing.T) {
 	base := validManifest()
 
 	cases := []struct {
 		name string
 		json string
-		want string // Teilstring der Fehlermeldung
+		want string // substring of the error message
 	}{
 		{"name gross", setMutiert(t, base, "name", "Wiki"), "name"},
 		{"name leer", setMutiert(t, base, "name", ""), "name"},
@@ -464,8 +463,8 @@ func TestParseManifestValidation(t *testing.T) {
 
 // --- profile_fields (M4) -----------------------------------------------------
 
-// profileFieldsFunctions baut eine functions.json mit der gegebenen
-// profile_fields-Sektion.
+// profileFieldsFunctions builds a functions.json with the given
+// profile_fields section.
 func profileFieldsFunctions(t *testing.T, fields []ProfileFieldSpec) string {
 	t.Helper()
 	data, err := json.Marshal(FunctionsFile{
@@ -479,8 +478,7 @@ func profileFieldsFunctions(t *testing.T, fields []ProfileFieldSpec) string {
 	return string(data)
 }
 
-// Gültige profile_fields (inkl. select mit Optionen und allen bekannten
-// Typen) gehen durch.
+// Valid profile_fields (incl. select with options and all known types) pass.
 func TestParseFunctionsFileValidProfileFields(t *testing.T) {
 	data := profileFieldsFunctions(t, []ProfileFieldSpec{
 		{Name: "favorite_color", Label: "Lieblingsfarbe", Type: profileFieldTypeText, Hint: "Demo-Feld", Group: "Profil"},
@@ -493,8 +491,8 @@ func TestParseFunctionsFileValidProfileFields(t *testing.T) {
 	}
 }
 
-// Ein Plugin darf ausschließlich Profilfelder registrieren (ohne RBAC-Objekt)
-// — wie der Host-Vertrag erlaubt.
+// A plugin may register profile fields only (without an RBAC object) — as the
+// host contract allows.
 func TestParseFunctionsFileProfileFieldsOnly(t *testing.T) {
 	data, err := json.Marshal(FunctionsFile{
 		Version:       contractFunctionsVersion,
@@ -508,8 +506,8 @@ func TestParseFunctionsFileProfileFieldsOnly(t *testing.T) {
 	}
 }
 
-// Fehlerfälle der profile_fields-Validierung. Jede Meldung muss den
-// Feldindex nennen.
+// Error cases of profile_fields validation. Every message must name the
+// field index.
 func TestParseFunctionsFileProfileFieldErrors(t *testing.T) {
 	longText := strings.Repeat("x", maxProfileFieldTextLen+1)
 
@@ -526,7 +524,7 @@ func TestParseFunctionsFileProfileFieldErrors(t *testing.T) {
 		name    string
 		fields  []ProfileFieldSpec
 		want    string
-		wantIdx bool // true wenn die Meldung einen Feldindex nennen MUSS
+		wantIdx bool // true if the message MUST name a field index
 	}{
 		{"fehlender Feldname", []ProfileFieldSpec{{Label: "Ohne Name", Type: profileFieldTypeText}}, "name", true},
 		{"Name mit Großbuchstaben", []ProfileFieldSpec{{Name: "Favorite", Label: "X", Type: profileFieldTypeText}}, "name", true},
@@ -551,7 +549,7 @@ func TestParseFunctionsFileProfileFieldErrors(t *testing.T) {
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Fehlermeldung %q enthält %q nicht", err.Error(), tc.want)
 			}
-			// Pro-Feld-Fehler müssen den 0-basierten Feldindex nennen.
+			// Per-field errors must name the 0-based field index.
 			if tc.wantIdx && !strings.Contains(err.Error(), "Profilfeld[") {
 				t.Fatalf("Fehlermeldung nannte keinen Feldindex: %v", err)
 			}
@@ -559,7 +557,7 @@ func TestParseFunctionsFileProfileFieldErrors(t *testing.T) {
 	}
 }
 
-// Kaputtes JSON in der profile_fields-Sektion → Fehler.
+// Broken JSON in the profile_fields section -> error.
 func TestParseFunctionsFileBrokenProfileFieldsJSON(t *testing.T) {
 	broken := `{"version":"1.0.0","objects":[],"profile_fields":[{"name":"x",}]}`
 	if _, err := parseFunctionsFile([]byte(broken)); err == nil {
@@ -567,8 +565,8 @@ func TestParseFunctionsFileBrokenProfileFieldsJSON(t *testing.T) {
 	}
 }
 
-// Weder Objekt noch Profilfeld → Fehler (Host: manifest.go validate, "at least
-// one object or profile field required").
+// Neither object nor profile field -> error (host: manifest.go validate, "at
+// least one object or profile field required").
 func TestParseFunctionsFileEmptyObjectsAndFields(t *testing.T) {
 	data, err := json.Marshal(FunctionsFile{Version: contractFunctionsVersion})
 	if err != nil {
@@ -579,8 +577,8 @@ func TestParseFunctionsFileEmptyObjectsAndFields(t *testing.T) {
 	}
 }
 
-// Regression: das ECHTE plugins/hello/functions.json muss durch den Validator
-// gehen (name/label/type/options/group/hint bleiben zulässig).
+// Regression: the REAL plugins/hello/functions.json must pass the validator
+// (name/label/type/options/group/hint remain allowed).
 func TestParseFunctionsFileRealHelloFixture(t *testing.T) {
 	path := filepath.Join("..", "..", "plugins", "hello", "functions.json")
 	data, err := os.ReadFile(path)
@@ -596,9 +594,9 @@ func TestParseFunctionsFileRealHelloFixture(t *testing.T) {
 	}
 }
 
-// setMutiert erzeugt aus der Base-Fixture ein JSON mit einem geänderten Feld.
-// Wichtig: JEDE Variante startet von der unveränderten Base, damit frühere
-// Mutationen (z. B. name="Wiki") spätere Fälle nicht verfälschen.
+// setMutiert turns the base fixture into JSON with one field changed.
+// Important: EVERY variant starts from the unmodified base so that earlier
+// mutations (e.g. name="Wiki") do not corrupt later cases.
 func setMutiert(t *testing.T, base, key, val string) string {
 	t.Helper()
 	var m map[string]any
