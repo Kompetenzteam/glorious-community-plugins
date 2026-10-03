@@ -58,7 +58,7 @@ Ein fehlender Key für das eigene Laufzeit-Paar bedeutet: „Plattform nicht unt
 
 | Feld | Typ | Pflicht | Regel |
 |---|---|---|---|
-| `url` | string | ja | Direkter Download-Link auf die `.glorious-plugin`-Datei, darf nicht leer sein. In der Praxis: `https://github.com/<org>/<repo>/releases/download/<tag>/<datei>.glorious-plugin`. |
+| `url` | string | ja | Direkter Download-Link auf die `.glorious-plugin`-Datei, darf nicht leer sein. In der Praxis: `https://github.com/<org>/<repo>/releases/download/<tag>/<datei>.glorious-plugin`. **Das Tag-Segment nach `.../releases/download/` (bzw. `.../releases/tag/`) muss zum `name` DIESES Plugin-Eintrags gehören** — `<name>-<semver>`, z. B. `hello-1.0.0` für den Eintrag `hello`, nie `wiki`. Der CI-Gate `scripts/check_index.py` prüft das fail-closed; eine fremde Tag-Zuordnung (Cross-Plugin-Korruption im `update-index`-Job) macht den Gate rot. |
 | `sha256` | string | ja | Exakt **64 Hex-Zeichen** (`^[0-9a-fA-F]{64}$`). Wird beim Installieren gegen die heruntergeladene Datei geprüft (Transport-Schutz). Die Werte in `index.example.json` sind reine Wiederholungen (`000…0`, `111…1`, `222…2`) — formal gültig, aber **keine** echten Prüfsummen; vor dem Veröffentlichen mit `sha256sum` ersetzen. |
 | `signer_pubkey` | string | ja (de facto) | **Base64 (StdEncoding)** des 32-Byte-Ed25519-Public-Keys, mit dem das `manifest.json` im Asset signiert ist. Die App decodiert und verifiziert damit die Manifest-Signatur vor der Installation. Der Builder gibt den Wert mit `--print-pubkey` aus. |
 
