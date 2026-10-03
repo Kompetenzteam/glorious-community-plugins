@@ -100,19 +100,45 @@ kopieren und anpassen):
    GitHub-Release mit allen `.glorious-plugin`-Assets.
 4. `index.json` mit den Assets aus dem Release aktualisieren (siehe §3) und committen.
 
-### Signing-Key
+### Signing-Key (PFLICHT-Secret)
 
-Der Ed25519-Private-Key wird als Repository-Secret `SIGNING_KEY` hinterlegt (Settings →
-Secrets and variables → Actions) und **niemals committet**:
+Der Ed25519-Private-Key **muss** als Repository-Secret `SIGNING_KEY` hinterlegt sein
+(Settings → Secrets and variables → Actions), sonst ist der Release-Weg gesperrt.
+Er wird **niemals committet**:
 
 ```bash
 openssl genpkey -algorithm ed25519 -out key.pem
 gh secret set SIGNING_KEY --repo Kompetenzteam/glorious-community-plugins < key.pem
 ```
 
+In Gitea (Source of Truth): *Repository → Settings → Actions → Secrets → New secret*,
+Name `SIGNING_KEY`, Wert = vollständiger Inhalt von `key.pem` (PEM oder Base64(PEM)).
+
+**Symptom bei fehlendem Secret:** der Workflow bricht im Schritt *„Signing-Key
+bereitstellen"* mit `::error::Repository-Secret SIGNING_KEY fehlt oder ist leer.`
+ab — **vor** jedem Matrix-Build. Früher zeigte sich dasselbe Problem erst spät im
+Schritt *„Plugin-ZIP bauen, validieren und signieren"* als kryptischer Fehler
+`build-plugin: signing key: Base64-Key hat 0 Bytes, gewünscht 64 (roh) oder 32 (Seed)`
+und riss alle drei Matrix-Beine mit. Der neue Fail-Fast ersetzt genau diesen Fall.
+
 Den öffentlichen Schlüssel (Base64) erhält man mit
 `build-plugin --print-pubkey --signing-key key.pem` — er kommt als `signer_pubkey` in
 den `index.json`. Der Builder akzeptiert PKCS#8-PEM und Base64 davon.
+
+### Publish-Secret (für Release + index.json-Sync)
+
+CI läuft auf **Gitea** (Source of Truth, `http://localhost:3000/...`). Die Schritte
+„Release-Assets hochladen" und „index.json committen und pushen" brauchen daher ein
+`GITEA_TOKEN` (Repo-Scope `write:repository`, Repo-Admin für Releases):
+
+```bash
+gh secret set GITEA_TOKEN --repo Kompetenzteam/glorious-community-plugins < token.txt   # GitHub-CLI gegen Gitea
+```
+
+bzw. Gitea-UI wie oben. Ohne dieses Secret bricht der Publish-Schritt mit
+`::error::Publish-Secret GITEA_TOKEN fehlt` ab. Ein reiner `github.token` reicht
+**nicht**: das Release und `index.json` liegen auf Gitea, GitHub ist nur der
+Push-Mirror.
 
 ## 5. Lokal bauen (ohne CI)
 

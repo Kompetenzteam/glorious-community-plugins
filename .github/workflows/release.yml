@@ -9,10 +9,28 @@
 # GitHub-Release mit allen Assets.
 #
 # Secrets (Repository > Settings > Secrets and variables > Actions):
-#   SIGNING_KEY   Ed25519-Private-Key des Autors — PKCS#8-PEM ("-----BEGIN PRIVATE
-#                 KEY-----", mehrzeilig) ODER Base64 davon. Wird NIE ausgegeben.
+#   SIGNING_KEY   PFLICHT. Ed25519-Private-Key des Autors — PKCS#8-PEM ("-----BEGIN
+#                 PRIVATE KEY-----", mehrzeilig) ODER Base64 davon. Wird NIE ausgegeben.
+#                 OHNE dieses Secret bricht der Workflow im Schritt "Signing-Key
+#                 bereitstellen" VOR jedem Build ab (fail-closed, alle Matrix-Beine
+#                 rot mit derselben Ursache). Einmalig setzen:
+#                   openssl genpkey -algorithm ed25519 -out key.pem
+#                   gh secret set SIGNING_KEY --repo <owner>/<repo> < key.pem
+#                 (oder Gitea: Repository > Settings > Actions > Secrets).
+#                 Siehe README §4 "Signing-Key".
+#
+#   GITEA_TOKEN   PFLICHT für Release + index.json-Sync. CI läuft auf Gitea
+#                 (Source of Truth); Release-Assets und index.json liegen dort,
+#                 GitHub ist nur Push-Mirror. Benötigt Repo-Scope
+#                 write:repository (Repo-Admin für Releases). Ein reiner
+#                 github.token reicht NICHT. Ohne das Secret bricht der Schritt
+#                 "Release-Assets hochladen" mit einem Publish-Fail-Fast ab.
+#                 Siehe README §4 "Publish-Secret".
 #
 # MIT License — Vorlage für Plugin-Autoren, frei anpassbar.
+#
+# EU AI Act transparency notice (Art. 50, Regulation (EU) 2024/1689): Mit
+# KI-Unterstützung erstellt.
 name: Release Plugin
 
 on:
@@ -66,6 +84,17 @@ jobs:
         run: |
           # Akzeptiert PKCS#8-PEM und Base64(PEM). Das Secret wird nur in
           # key.pem materialisiert und ist nie in Logs/Outputs sichtbar.
+          #
+          # Fail-closed VOR jedem Build: fehlt das Secret (oder ist es leer),
+          # brechen wir hier mit einer Handlungsanweisung ab, statt den Fehler
+          # erst im Signieren-Schritt als kryptischen Key-Längenfehler zu
+          # zeigen. Der Fehlertext ist bewusst EINDEUTIG und nennt den Fix.
+          if [[ -z "${SIGNING_KEY:-}" ]]; then
+            echo "::error::Repository-Secret SIGNING_KEY fehlt oder ist leer. Ohne Ed25519-Signing-Key kann kein Plugin-ZIP signiert werden." >&2
+            echo "Fix: openssl genpkey -algorithm ed25519 -out key.pem && gh secret set SIGNING_KEY --repo '${GITHUB_REPOSITORY}' --body \"\$(cat key.pem)\"" >&2
+            echo "Oder: Repository > Settings > Secrets and variables > Actions > New repository secret 'SIGNING_KEY' (Inhalt von key.pem, PEM oder Base64). Siehe README §4." >&2
+            exit 1
+          fi
           printf '%s' "$SIGNING_KEY" > key.pem
           if ! grep -q -- "-----BEGIN" key.pem; then
             if ! base64 -d key.pem > key.dec 2>/dev/null; then
@@ -73,6 +102,13 @@ jobs:
               exit 1
             fi
             mv key.dec key.pem
+          fi
+          # Zweite Absicherung: der materialisierte Key muss ein Ed25519-PKCS#8-
+          # Key sein. Ein falsches Secret (z. B. ein abgeschnittener Wert)
+          # scheitert damit hier, nicht erst im teuren Matrix-Build.
+          if ! openssl pkey -in key.pem -noout >/dev/null 2>&1; then
+            echo "::error::SIGNING_KEY ist kein gültiger PKCS#8-Private-Key (openssl pkey lehnt ihn ab)." >&2
+            exit 1
           fi
         env:
           SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
@@ -127,7 +163,18 @@ jobs:
           # Kein Heredoc: der YAML-Block-Skalar endet an einer Zeile ohne
           # Einrueckung, ein Heredoc-Body auf Spalte 0 wuerde die YAML-Struktur
           # zerstoeren. Daher ein einzelner python3 -c-Aufdruck.
-          python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p,encoding="utf-8")); d["entrypoint"]=sys.argv[2]; open(p,"w",encoding="utf-8").write(json.dumps(d,indent=2,ensure_ascii=False)+"\n")' manifest.build.json "$entry"
+          # python3 statt python: auf ubuntu-latest ist nur python3 garantiert;
+          # ein fehlendes python3 wuerde das Manifest sonst still unverändert
+          # lassen und der Build nur warnen (entrypoint != binary) statt failen.
+          py="$(command -v python3 || command -v python)"
+          if [[ -z "$py" ]]; then
+            echo "python3/python fehlt — Manifest-Patch nicht moeglich." >&2
+            exit 1
+          fi
+          "$py" -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p,encoding="utf-8")); d["entrypoint"]=sys.argv[2]; open(p,"w",encoding="utf-8").write(json.dumps(d,indent=2,ensure_ascii=False)+"\n")' manifest.build.json "$entry"
+          # Verifizieren, dass der Patch wirklich landete, statt dem Build zu
+          # vertrauen (er warnt nur, wenn Entrypoint != Binary-Name).
+          "$py" -c 'import json,sys; d=json.load(open("manifest.build.json",encoding="utf-8")); assert d["entrypoint"]==sys.argv[1], d["entrypoint"]' "$entry"
           echo "entrypoint=$entry" >> "$GITHUB_OUTPUT"
 
       - name: Plugin-ZIP bauen, validieren und signieren
@@ -156,10 +203,29 @@ jobs:
           # build-plugin wurde ins Repo-Root gebaut; dieser Schritt läuft dort.
           echo "pubkey=$(./build-plugin --print-pubkey --signing-key key.pem)" >> "$GITHUB_OUTPUT"
 
+      - name: ZIP validieren (Einträge, Entrypoint vs. Binary, Ed25519-Signatur)
+        shell: bash
+        run: |
+          # Verifiziert das soeben erzeugte Asset gegen den public Key des
+          # Signing-Keys. Ohne diesen Schritt war "validieren" im Build-Schritt
+          # nur eine Zusicherung; jetzt ist es ein Gate: Entrypoint muss im
+          # Archiv liegen und die Manifest-Signatur matchen.
+          go build -o verify-zip ./tools/build-plugin/verify-zip
+          ./verify-zip "${{ steps.asset.outputs.asset }}" key.pem
+
       - name: Release-Assets hochladen
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          GH_HOST: ${{ github.server_url }}
         run: |
+          # Fail-closed: ohne Publish-Secret kann kein Release angelegt werden.
+          # CI läuft auf Gitea (Source of Truth); das Release und index.json
+          # liegen dort, github.token wäre still gegen den falschen Host.
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::Publish-Secret GITEA_TOKEN fehlt oder ist leer. Release/index.json liegen auf Gitea (Source of Truth)." >&2
+            echo "Fix: Repository > Settings > Actions > Secrets > New secret 'GITEA_TOKEN' (Repo-Scope write:repository, Admin für Releases). Siehe README §4 'Publish-Secret'." >&2
+            exit 1
+          fi
           asset="${{ steps.asset.outputs.asset }}"
           tag="${{ github.ref_name }}"
           # Release beim ersten Matrix-Job anlegen, danach Assets ergänzen.
@@ -211,9 +277,14 @@ jobs:
       - name: index.json auf die Release-Asset-Hashes pinnen
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          GH_HOST: ${{ github.server_url }}
         run: |
           set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::Publish-Secret GITEA_TOKEN fehlt oder ist leer. Release-Assets liegen auf Gitea (Source of Truth)." >&2
+            exit 1
+          fi
           name="${{ steps.tag.outputs.name }}"
           version="${{ steps.tag.outputs.version }}"
           tag="${{ github.ref_name }}"
