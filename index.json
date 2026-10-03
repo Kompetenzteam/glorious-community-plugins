@@ -7,7 +7,7 @@
     {
       "name": "hello",
       "title": "Hello — Vorlagen-Plugin",
-      "description": "Entwickler-Vorlage für Glorious-Plugins: minimale, lauffähige Struktur (manifest.json, functions.json, README, Binary) mit stdin/stdout-Ping-Pong als Dummy-Implementierung. Registriert seit 0.1.1 ein Demo-Profilfeld (favorite_color) über die functions.json-Sektion profile_fields.",
+      "description": "Entwickler-Vorlage für Glorious-Plugins: minimale, lauffähige Struktur (manifest.json, functions.json, README, Binary) mit vollständiger Referenz-Implementierung des Plugin-Vertrags (mTLS-Listener, net/rpc-Handshake, Ready-Zeile, fail-closed). Registriert seit 0.1.1 ein Demo-Profilfeld (favorite_color) über die functions.json-Sektion profile_fields.",
       "author": "Glorious Platform Team",
       "license": "MIT",
       "homepage": "https://github.com/Kompetenzteam/glorious-community-plugins/tree/main/plugins/hello",
@@ -20,23 +20,23 @@
       "icon_url": "https://raw.githubusercontent.com/Kompetenzteam/glorious-community-plugins/main/icons/hello.svg",
       "platforms": {
         "windows-amd64": {
-          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-0.1.1/hello-windows-amd64.glorious-plugin",
-          "sha256": "4c6f9c83f12e90c50fe41dc229202b62c036459025a5bf5af057721025dbfdb1",
+          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-0.1.2/hello-windows-amd64.glorious-plugin",
+          "sha256": "8ff33c67efefccb89876bf0e862d0d7e0aad76e729c77b2a2e4eddbc74bf4891",
           "signer_pubkey": "EW0OjGzehBfsLTSL1DCjQDlIcJjU+CG/NjJlx+GRMss="
         },
         "linux-amd64": {
-          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-0.1.1/hello-linux-amd64.glorious-plugin",
-          "sha256": "7a3e67e2d74710d50aad540d2e05d3eb6ab2a558e3acf9c527c5541d6827a891",
+          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-0.1.2/hello-linux-amd64.glorious-plugin",
+          "sha256": "c2c14b1e01b5e14f333cd266254f8ca114bab33e0afe42ef01e36f7ced103fa1",
           "signer_pubkey": "EW0OjGzehBfsLTSL1DCjQDlIcJjU+CG/NjJlx+GRMss="
         },
         "darwin-arm64": {
-          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-0.1.1/hello-darwin-arm64.glorious-plugin",
-          "sha256": "71715bf81419392960242f972e20a0fd8aba6629e8f5012d21b5f506d9b60b65",
+          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-0.1.2/hello-darwin-arm64.glorious-plugin",
+          "sha256": "d6e307ed60fbe2bd529f5218d79f0d5081f5dd8b20df3d9e2b428e58de924d6e",
           "signer_pubkey": "EW0OjGzehBfsLTSL1DCjQDlIcJjU+CG/NjJlx+GRMss="
         }
       },
-      "latest_version": "0.1.1",
-      "changelog": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/tag/hello-0.1.1"
+      "latest_version": "0.1.2",
+      "changelog": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/tag/hello-0.1.2"
     }
   ]
 }
