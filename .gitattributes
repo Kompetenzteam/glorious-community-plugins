@@ -1,0 +1,4 @@
+# Normalize line endings in the repository: Go sources are always LF, so
+# `gofmt -l .` is clean regardless of the checkout's core.autocrlf setting.
+# The community CI branch (feat/community-ci) adds the same rule for *.go.
+*.go text eol=lf

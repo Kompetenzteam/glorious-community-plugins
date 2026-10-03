@@ -13,6 +13,14 @@ import (
 	"glorious-community/plugins/hello/internal/handshake"
 )
 
+// expectedFeatures is the independently authored expected feature set for the
+// reference plugin, hard-coded in the test on purpose. It must NOT be derived
+// from handshake.Features: comparing the wire reply against the production
+// variable would be a self-comparison tautology that stays green even when a
+// feature is dropped from handshake.Features. Listing the tokens literally
+// here forces any change to the advertised surface to show up as a red test.
+var expectedFeatures = []string{"routes", "jobs", "models", "nav"}
+
 // dialHost opens a real mutual-TLS connection to the running plugin as the host
 // would, returning an rpc.Client. It mirrors the handshake test's dial.
 func dialHost(t *testing.T, ca *testCA, addr string) *rpc.Client {
@@ -61,8 +69,8 @@ func TestHandshake2OverMTLS(t *testing.T) {
 	if reply.ErrorCode != "" {
 		t.Errorf("ErrorCode = %q, want empty", reply.ErrorCode)
 	}
-	if !reflect.DeepEqual(reply.Features, handshake.Features) {
-		t.Errorf("Features = %v, want %v", reply.Features, handshake.Features)
+	if !reflect.DeepEqual(reply.Features, expectedFeatures) {
+		t.Errorf("Features = %v, want %v (independent expectation, not handshake.Features)", reply.Features, expectedFeatures)
 	}
 }
 

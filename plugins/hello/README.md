@@ -38,9 +38,15 @@ Der Startablauf (verifiziert gegen `glorious-platform_v2`):
 5. **Handshake**: Der Host verbindet sich per mTLS und ruft
    `HandshakeService.Ping` auf ("Ping-vor-Nutzung"). Das Plugin antwortet
    mit der Vertragsversion `1.0` (akzeptiert sind `1.0` und `1.1`; `1.0` ist
-   die Basis-Version, die immer akzeptiert wird — die optionale
-   `Handshake2`-Negotiation und die Feature-Aushandlung auf 1.1 werden von
-   der Vorlage bewusst nicht belegt).
+   die Basis-Version, die immer akzeptiert wird). Zusätzlich ist die
+   `Handshake2`-Negotiation vollständig implementiert: `HandshakeService`-
+   `Handshake2` handelt die RPC-Version `1.1` aus und liefert die
+   Feature-Aushandlung (`routes`, `jobs`, `models`, `nav`) sowie die
+   Contract-Felder (`AcceptedProtocolVersion`, `ContributionVersion`,
+   `ServerVersion`) über die echte gob-Leitung zurück. Das Verhalten ist
+   end-to-end getestet (siehe `handshake_e2e_test.go`:
+   `TestHandshake2OverMTLS`, `TestHandshake2ContractReplyFieldsOverMTLS`,
+   `TestHandshake2WrongNameOverMTLS`, `TestHandshakePingStillOneZero`).
 6. **Fail-closed**: Fehlt eine der benötigten Env-Variablen, loggt das
    Plugin den Fehler auf stderr und beendet sich mit Exit-Code ≠ 0 — es gibt
    keine Defaults und es wird keine Ready-Zeile gedruckt.

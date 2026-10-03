@@ -50,13 +50,18 @@ Vorlagen-Plugin — die minimale, lauffähige Struktur, die jedes Plugin mitbrin
   `options`, `group`, `hint`; max. 100 Felder pro Plugin).
 - **`README.md`** — Pflicht (maschinell validiert): ≥ 300 Zeichen und die Sektionen
   `## Beschreibung` + `## Berechtigungen`.
-- **Binary** — `main.go` ist eine Dummy-Implementierung: loggt beim Start
-  `hello-plugin: started (version 0.1.1)` und antwortet auf stdin-Eingabe `ping` mit
-  `pong`. Der Entrypoint im Manifest muss exakt zum Binary-Namen im ZIP passen
+- **Binary** — `main.go` ist eine **vollständige Referenz-Implementierung des
+  Plugin-Vertrags** (Stand 1.0.0): Es lädt die vom Host provisionierte
+  mTLS-Identität, startet einen TLS-Listener auf `127.0.0.1:0` mit
+  `RequireAndVerifyClientCert`, registriert den `HandshakeService` (Ping +
+  Handshake2-Feature-Aushandlung) über `net/rpc` und meldet seine Adresse als
+  Ready-Zeile `GLO_PLUGIN_READY 127.0.0.1:<port>` auf stdout. Der Entrypoint im
+  Manifest muss exakt zum Binary-Namen im ZIP passen
   (`--binary hello.exe` → `hello.exe` im ZIP, Entrypoint `./hello.exe`). Der Host
   löst den Entrypoint wörtlich auf (keine `.exe`-Inferenz); der Release-Workflow
   patcht dafür eine Manifest-Kopie je Plattform (`./hello` unter Unix,
-  `./hello.exe` unter Windows).
+  `./hello.exe` unter Windows). Ein Rezept für den manuellen ZIP-Bau ohne
+  Release-Workflow steht in §5.
 
 ## 3. index.json pflegen
 
@@ -111,6 +116,8 @@ den `index.json`. Der Builder akzeptiert PKCS#8-PEM und Base64 davon.
 
 ## 5. Lokal bauen (ohne CI)
 
+### 5a. Mit dem Builder-Tool (empfohlen)
+
 ```bash
 cd tools/build-plugin
 go build -o build-plugin .
@@ -125,7 +132,99 @@ go build -o build-plugin .
 
 Details zu allen Flags: `./build-plugin -h`.
 
-## 6. Verbote
+### 5b. Manuelles ZIP-Rezept (ohne GitHub-Release)
+
+Wer das `.glorious-plugin` von Hand bauen will, muss die Archivstruktur und den
+Entrypoint **exakt** treffen — der Installer prüft beides fail-closed:
+
+**Regeln**
+
+1. Das ZIP enthält am **Root** (nicht in einem Unterordner!) genau:
+   `manifest.json`, `functions.json`, `README.md` und das Binary. Der
+   Manifest-`entrypoint` löst **wörtlich** relativ zum Plugin-Arbeitsverzeichnis
+   auf — es gibt **keine** `.exe`-Inferenz.
+2. Der **Binary-Name im ZIP-Root muss der Entrypoint sein**:
+   - Windows: Binary heißt `hello.exe`, Entrypoint `"./hello.exe"`.
+   - Unix (linux/darwin): Binary heißt `hello`, Entrypoint `"./hello"`.
+   Ein einzelnes Manifest deckt beide nicht ab — deshalb je Plattform eine
+   Manifest-Kopie mit passendem `entrypoint` verwenden (so macht es auch
+   `release.yml`).
+3. Das Binary muss **ausführbar** sein (`chmod +x`) bzw. im ZIP das Modus-Bit
+   `0755` tragen; alle anderen Einträge `0644`.
+4. Das Manifest muss **signiert** sein (`signature` = Base64-Ed25519 über das
+   kanonische JSON mit geleertem `signature`-Feld). Ohne gültige Signatur
+   lehnt der Installer ab. Zum Signieren entweder `build-plugin` mit
+   `--signing-key` nutzen oder die Signatur wie in
+   `tools/build-plugin/main.go` (`canonicalManifestJSON` + `signManifest`)
+   nachbauen.
+5. Grenzwerte: ≤ 50 MiB unkomprimiert, ≤ 1000 Einträge, <= 50 MiB pro Eintrag,
+   **keine** Symlinks, **keine** Pfad-Escapes (`..`, absolute Pfade,
+   Backslashes). Optional liegen Icon/Assets unter `assets/`.
+
+**Beispiel (Unix, mit `zip`)**
+
+```bash
+# In einem Baustein-Verzeichnis mit manifest.json/functions.json/README.md/hello
+zip -X hello-1.0.0-linux-amd64.glorious-plugin \
+  manifest.json functions.json README.md hello
+```
+
+**Beispiel (Windows, mit PowerShell `Compress-Archive`)**
+
+```powershell
+Compress-Archive -Path manifest.json,functions.json,README.md,hello.exe `
+  -DestinationPath hello-1.0.0-windows-amd64.glorious-plugin
+```
+
+> Achtung: `Compress-Archive` setzt keine Unix-Modus-Bits. Der Installer behandelt
+> das Binary anhand des `entrypoint`-Namens und der Plattform; der offizielle Weg
+> bleibt der Builder (§5a), der die Modus-Bits korrekt setzt. Für reproduzierbare,
+> signierte Artefakte daher immer `build-plugin` verwenden.
+
+Den `sha256` des fertigen ZIP (`sha256sum <datei>` bzw. `Get-FileHash`) und den
+`signer_pubkey` (`build-plugin --print-pubkey`) in `index.json` eintragen (§3).
+
+## 6. Eine neue Sprache ergänzen (i18n)
+
+Die Referenz-Vorlage `hello` liefert ihre Meldungen über ein minimales
+Nachrichten-System in [`plugins/hello/internal/i18n`](./plugins/hello/internal/i18n)
+aus. Alle Meldungen laufen über **Message-Keys**, nie über literale Strings im
+Code:
+
+- `internal/i18n/messages.go` deklariert die Keys (Typ `Key`, z. B.
+  `KeyIdentityMismatch`) und die Tabelle `messages` (`Locale → Key → string`).
+- `i18n.Message(key)` liefert die Meldung für die aktive Locale; fehlt die
+  Übersetzung, wird der Key selbst zurückgegeben (sichtbar in Logs statt leer).
+- Die aktive Locale liest das Paket aus der Host-Umgebung
+  (`GLORIOUS_PLUGIN_LOCALE`, Werte `de` / `en`; **Default `de`**, unbekannte
+  Werte fallen auf den Default zurück).
+
+**So ergänzt man eine Sprache (Beispiel `fr`):**
+
+1. In `internal/i18n/messages.go` eine `Locale`-Konstante ergänzen
+   (`LocaleFR Locale = "fr"`), sie in `ParseLocale` aufnehmen und in
+   `Locales()` zurückgeben; dann alle Keys in der `messages`-Tabelle
+   übersetzen:
+
+   ```go
+   LocaleFR: {
+       KeyIdentityMismatch: "l'identité ne correspond pas au plugin attendu",
+       // ... jeden weiteren Key ebenfalls
+   },
+   ```
+
+2. Keinen Key vergessen: `messages_test.go` prüft über `Locales()` und
+   `Keys()`, dass jede Locale jeden Key (nicht-leer) enthält — die neue Locale
+   wird also automatisch mitgeprüft, sobald sie in `Locales()` steht.
+3. Aufrufe im Code bleiben unverändert (`i18n.Message(KeyIdentityMismatch)`) —
+   es wird **kein** Literal hartkodiert.
+4. Im Plugin-`README.md` dokumentieren, welche Locales unterstützt werden.
+
+> Hinweis: Sprache der **Meldungen** (dieser Abschnitt) ist unabhängig von der
+> Sprache der **Doku**. Die Vorlage hält Meldungen in `internal/i18n` zentral;
+> die Doku darf DE oder EN sein, wo sie es ist.
+
+## 7. Verbote
 
 - Keine Secrets irgendeiner Art im ZIP oder im Repo (`key.pem` ist per `.gitignore`
   ausgeschlossen).
