@@ -19,8 +19,8 @@
 //     SignManifest) — dieselbe Struct-Reihenfolge, dieselben JSON-Tags,
 //     Signatur über das kanonische JSON ohne signature-Feld.
 //   - functions.json: internal/plugins/manifest.go (ParseFunctionsFile,
-//     DefaultLimits 50 Objekte / 10 Aktionen) + internal/rbac (System-Aktionen
-//     und -Rollen).
+//     DefaultLimits 50 Objekte / 10 Aktionen, validateProfileFields mit den
+//     Profilfeld-Grenzen) + internal/rbac (System-Aktionen und -Rollen).
 //   - README: internal/pluginstore/readme.go (ValidateReadme: >= 300 Runes,
 //     Sektionen "## Beschreibung" und "## Berechtigungen").
 //   - Archiv: Plan §3 — ZIP mit manifest.json, functions.json, README.md,
@@ -61,7 +61,28 @@ const (
 	maxArchiveSize           = 50 << 20 // 50 MiB unkomprimierter Inhalt
 	maxFileSize              = 50 << 20 // 50 MiB pro Eintrag
 	maxArchiveEntries        = 1000
+
+	// Profile-field contract limits (functions.json "profile_fields") — exact
+	// mirrors of internal/plugins/manifest.go. Text lengths are counted in
+	// runes (UTF-8-safe, so umlauts count as one character).
+	maxProfileFieldTextLen    = 200
+	maxProfileFieldOptions    = 50
+	maxProfileFieldOptionLen  = 100
+	maxProfileFieldsPerPlugin = 100
 )
+
+// Bekannte Profilfeld-Typen (internal/plugins/manifest.go ProfileFieldType*).
+const (
+	profileFieldTypeText     = "text"
+	profileFieldTypeTextarea = "textarea"
+	profileFieldTypeNumber   = "number"
+	profileFieldTypeSelect   = "select"
+)
+
+// profileFieldNamePattern ist das erlaubte Feldnamen-Format (max. 64 Zeichen):
+// Kleinbuchstabe/Ziffer am Anfang, dann Kleinbuchstaben, Ziffern, "_" oder "-"
+// — identisch zu internal/plugins/manifest.go.
+var profileFieldNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 // knownActions ist das System-Aktionsset (internal/rbac, AllActions).
 var knownActions = []string{"read", "create", "update", "delete", "execute", "manage", "review", "grant", "write"}
@@ -99,10 +120,26 @@ type Manifest struct {
 }
 
 // FunctionsFile ist der RBAC-Permission-Contract (functions.json) — exakt wie
-// internal/plugins/manifest.go.
+// internal/plugins/manifest.go, inklusive der optionalen profile_fields-Sektion.
 type FunctionsFile struct {
 	Version string           `json:"version"`
 	Objects []FunctionObject `json:"objects"`
+	// ProfileFields ist der spiegelbildliche profile_fields-Contract des Hosts
+	// (internal/plugins/manifest.go FunctionsFile.ProfileFields) — optional.
+	ProfileFields []ProfileFieldSpec `json:"profile_fields,omitempty"`
+}
+
+// ProfileFieldSpec ist ein einzelnes Plugin-Profilfeld (functions.json
+// "profile_fields") — Spiegel von internal/plugins/manifest.go ProfileFieldSpec:
+// Name (Maschinenschlüssel), Label (Anzeigetext), Type, Options (nur select),
+// Group (Abschnitt) und Hint (Hilfetext).
+type ProfileFieldSpec struct {
+	Name    string   `json:"name"`
+	Label   string   `json:"label"`
+	Type    string   `json:"type"`
+	Options []string `json:"options,omitempty"`
+	Group   string   `json:"group,omitempty"`
+	Hint    string   `json:"hint,omitempty"`
 }
 
 // FunctionObject ist ein einzelnes Permission-Objekt (Bare-Name ohne "plugin."
@@ -363,11 +400,11 @@ func parseFunctionsFile(data []byte) (*FunctionsFile, error) {
 	if ff.Version != contractFunctionsVersion {
 		return nil, fmt.Errorf("functions.json: Vertragsversion %q nicht unterstützt (gewünscht %q)", ff.Version, contractFunctionsVersion)
 	}
-	if len(ff.Objects) == 0 {
-		return nil, errors.New("functions.json: mindestens ein Objekt erforderlich")
-	}
 	if len(ff.Objects) > maxPluginObjects {
 		return nil, fmt.Errorf("functions.json: %d Objekte überschreiten das Maximum von %d", len(ff.Objects), maxPluginObjects)
+	}
+	if len(ff.Objects) == 0 && len(ff.ProfileFields) == 0 {
+		return nil, errors.New("functions.json: mindestens ein Objekt oder Profilfeld erforderlich")
 	}
 	seen := make(map[string]bool, len(ff.Objects))
 	for _, obj := range ff.Objects {
@@ -375,7 +412,76 @@ func parseFunctionsFile(data []byte) (*FunctionsFile, error) {
 			return nil, err
 		}
 	}
+	if err := validateProfileFields(ff.ProfileFields); err != nil {
+		return nil, err
+	}
 	return &ff, nil
+}
+
+// validateProfileFields prüft die profile_fields-Sektion exakt nach dem
+// Host-Vertrag (internal/plugins/manifest.go validateProfileFields):
+// eindeutige, wohlgeformte Namen; Pflicht-Label mit Textlängen-Grenze;
+// bekannter Typ; select braucht Optionen (max. 50, je max. 100 Runes), andere
+// Typen dürfen keine Optionen tragen; begrenzte Group/Hint; Feldobergrenze.
+// Jede Meldung nennt den 0-basierten Feldindex, damit Autoren die Zeile im
+// JSON schnell finden.
+func validateProfileFields(fields []ProfileFieldSpec) error {
+	if len(fields) > maxProfileFieldsPerPlugin {
+		return fmt.Errorf("functions.json: %d Profilfelder überschreiten das Maximum von %d", len(fields), maxProfileFieldsPerPlugin)
+	}
+	seen := make(map[string]bool, len(fields))
+	for i, pf := range fields {
+		if strings.TrimSpace(pf.Name) == "" {
+			return fmt.Errorf("functions.json: Profilfeld[%d]: name ist Pflicht", i)
+		}
+		if !profileFieldNamePattern.MatchString(pf.Name) {
+			return fmt.Errorf("functions.json: Profilfeld[%d]: name %q muss %s entsprechen", i, pf.Name, profileFieldNamePattern)
+		}
+		if seen[pf.Name] {
+			return fmt.Errorf("functions.json: Profilfeld[%d]: doppelter Feldname %q", i, pf.Name)
+		}
+		seen[pf.Name] = true
+
+		if strings.TrimSpace(pf.Label) == "" {
+			return fmt.Errorf("functions.json: Profilfeld[%d] (%s): label ist Pflicht", i, pf.Name)
+		}
+		if utf8.RuneCountInString(pf.Label) > maxProfileFieldTextLen {
+			return fmt.Errorf("functions.json: Profilfeld[%d] (%s): label überschreitet %d Zeichen", i, pf.Name, maxProfileFieldTextLen)
+		}
+		if utf8.RuneCountInString(pf.Group) > maxProfileFieldTextLen {
+			return fmt.Errorf("functions.json: Profilfeld[%d] (%s): group überschreitet %d Zeichen", i, pf.Name, maxProfileFieldTextLen)
+		}
+		if utf8.RuneCountInString(pf.Hint) > maxProfileFieldTextLen {
+			return fmt.Errorf("functions.json: Profilfeld[%d] (%s): hint überschreitet %d Zeichen", i, pf.Name, maxProfileFieldTextLen)
+		}
+
+		switch pf.Type {
+		case profileFieldTypeText, profileFieldTypeTextarea, profileFieldTypeNumber:
+			if len(pf.Options) > 0 {
+				return fmt.Errorf("functions.json: Profilfeld[%d] (%s): Typ %q darf keine options deklarieren", i, pf.Name, pf.Type)
+			}
+		case profileFieldTypeSelect:
+			if len(pf.Options) == 0 {
+				return fmt.Errorf("functions.json: Profilfeld[%d] (%s): select braucht mindestens eine Option", i, pf.Name)
+			}
+			if len(pf.Options) > maxProfileFieldOptions {
+				return fmt.Errorf("functions.json: Profilfeld[%d] (%s): %d Optionen überschreiten das Maximum von %d", i, pf.Name, len(pf.Options), maxProfileFieldOptions)
+			}
+			optSeen := make(map[string]bool, len(pf.Options))
+			for _, opt := range pf.Options {
+				if utf8.RuneCountInString(opt) > maxProfileFieldOptionLen {
+					return fmt.Errorf("functions.json: Profilfeld[%d] (%s): Option überschreitet %d Zeichen", i, pf.Name, maxProfileFieldOptionLen)
+				}
+				if optSeen[opt] {
+					return fmt.Errorf("functions.json: Profilfeld[%d] (%s): doppelte Option %q", i, pf.Name, opt)
+				}
+				optSeen[opt] = true
+			}
+		default:
+			return fmt.Errorf("functions.json: Profilfeld[%d] (%s): unbekannter Typ %q (erlaubt: text, textarea, number, select)", i, pf.Name, pf.Type)
+		}
+	}
+	return nil
 }
 
 // validateObject prüft ein Permission-Objekt gegen den Contract: Bare-Name

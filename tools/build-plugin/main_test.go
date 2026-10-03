@@ -462,6 +462,140 @@ func TestParseManifestValidation(t *testing.T) {
 	}
 }
 
+// --- profile_fields (M4) -----------------------------------------------------
+
+// profileFieldsFunctions baut eine functions.json mit der gegebenen
+// profile_fields-Sektion.
+func profileFieldsFunctions(t *testing.T, fields []ProfileFieldSpec) string {
+	t.Helper()
+	data, err := json.Marshal(FunctionsFile{
+		Version:       contractFunctionsVersion,
+		Objects:       []FunctionObject{{Name: "wiki", Actions: []string{"read"}}},
+		ProfileFields: fields,
+	})
+	if err != nil {
+		t.Fatalf("marshal functions: %v", err)
+	}
+	return string(data)
+}
+
+// Gültige profile_fields (inkl. select mit Optionen und allen bekannten
+// Typen) gehen durch.
+func TestParseFunctionsFileValidProfileFields(t *testing.T) {
+	data := profileFieldsFunctions(t, []ProfileFieldSpec{
+		{Name: "favorite_color", Label: "Lieblingsfarbe", Type: profileFieldTypeText, Hint: "Demo-Feld", Group: "Profil"},
+		{Name: "bio", Label: "Über mich", Type: profileFieldTypeTextarea},
+		{Name: "age", Label: "Alter", Type: profileFieldTypeNumber},
+		{Name: "editor", Label: "Editor", Type: profileFieldTypeSelect, Options: []string{"neovim", "vscode"}},
+	})
+	if _, err := parseFunctionsFile([]byte(data)); err != nil {
+		t.Fatalf("gültige profile_fields müssen durchgehen: %v", err)
+	}
+}
+
+// Ein Plugin darf ausschließlich Profilfelder registrieren (ohne RBAC-Objekt)
+// — wie der Host-Vertrag erlaubt.
+func TestParseFunctionsFileProfileFieldsOnly(t *testing.T) {
+	data, err := json.Marshal(FunctionsFile{
+		Version:       contractFunctionsVersion,
+		ProfileFields: []ProfileFieldSpec{{Name: "nickname", Label: "Spitzname", Type: profileFieldTypeText}},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if _, err := parseFunctionsFile(data); err != nil {
+		t.Fatalf("Profilfelder ohne Objekte müssen erlaubt sein: %v", err)
+	}
+}
+
+// Fehlerfälle der profile_fields-Validierung. Jede Meldung muss den
+// Feldindex nennen.
+func TestParseFunctionsFileProfileFieldErrors(t *testing.T) {
+	longText := strings.Repeat("x", maxProfileFieldTextLen+1)
+
+	manyFields := make([]ProfileFieldSpec, 0, maxProfileFieldsPerPlugin+1)
+	for i := 0; i <= maxProfileFieldsPerPlugin; i++ {
+		manyFields = append(manyFields, ProfileFieldSpec{
+			Name:  fmt.Sprintf("f%03d", i),
+			Label: "Feld",
+			Type:  profileFieldTypeText,
+		})
+	}
+
+	cases := []struct {
+		name     string
+		fields   []ProfileFieldSpec
+		want     string
+		wantIdx  bool // true wenn die Meldung einen Feldindex nennen MUSS
+	}{
+		{"fehlender Feldname", []ProfileFieldSpec{{Label: "Ohne Name", Type: profileFieldTypeText}}, "name", true},
+		{"Name mit Großbuchstaben", []ProfileFieldSpec{{Name: "Favorite", Label: "X", Type: profileFieldTypeText}}, "name", true},
+		{"doppelter Name", []ProfileFieldSpec{
+			{Name: "dup", Label: "A", Type: profileFieldTypeText},
+			{Name: "dup", Label: "B", Type: profileFieldTypeText},
+		}, "doppelt", true},
+		{"ungültiger Typ", []ProfileFieldSpec{{Name: "x", Label: "X", Type: "date"}}, "Typ", true},
+		{"select ohne Optionen", []ProfileFieldSpec{{Name: "x", Label: "X", Type: profileFieldTypeSelect}}, "Option", true},
+		{"text mit Optionen", []ProfileFieldSpec{{Name: "x", Label: "X", Type: profileFieldTypeText, Options: []string{"a"}}}, "options", true},
+		{"fehlendes Label", []ProfileFieldSpec{{Name: "x", Type: profileFieldTypeText}}, "label", true},
+		{"zu langes Label", []ProfileFieldSpec{{Name: "x", Label: longText, Type: profileFieldTypeText}}, "label", true},
+		{"zu viele Felder", manyFields, "Maximum", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data := profileFieldsFunctions(t, tc.fields)
+			_, err := parseFunctionsFile([]byte(data))
+			if err == nil {
+				t.Fatalf("erwartete Fehler (%s), bekam nil", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Fehlermeldung %q enthält %q nicht", err.Error(), tc.want)
+			}
+			// Pro-Feld-Fehler müssen den 0-basierten Feldindex nennen.
+			if tc.wantIdx && !strings.Contains(err.Error(), "Profilfeld[") {
+				t.Fatalf("Fehlermeldung nannte keinen Feldindex: %v", err)
+			}
+		})
+	}
+}
+
+// Kaputtes JSON in der profile_fields-Sektion → Fehler.
+func TestParseFunctionsFileBrokenProfileFieldsJSON(t *testing.T) {
+	broken := `{"version":"1.0.0","objects":[],"profile_fields":[{"name":"x",}]}`
+	if _, err := parseFunctionsFile([]byte(broken)); err == nil {
+		t.Fatal("erwartete Fehler bei kaputtem JSON, bekam nil")
+	}
+}
+
+// Weder Objekt noch Profilfeld → Fehler (Host: manifest.go validate, "at least
+// one object or profile field required").
+func TestParseFunctionsFileEmptyObjectsAndFields(t *testing.T) {
+	data, err := json.Marshal(FunctionsFile{Version: contractFunctionsVersion})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if _, err := parseFunctionsFile(data); err == nil {
+		t.Fatal("leere objects und profile_fields müssen abgelehnt werden")
+	}
+}
+
+// Regression: das ECHTE plugins/hello/functions.json muss durch den Validator
+// gehen (name/label/type/options/group/hint bleiben zulässig).
+func TestParseFunctionsFileRealHelloFixture(t *testing.T) {
+	path := filepath.Join("..", "..", "plugins", "hello", "functions.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("hello/functions.json lesen: %v", err)
+	}
+	ff, err := parseFunctionsFile(data)
+	if err != nil {
+		t.Fatalf("hello/functions.json muss gültig sein: %v", err)
+	}
+	if len(ff.ProfileFields) == 0 {
+		t.Fatal("hello/functions.json sollte mindestens ein Profilfeld deklarieren")
+	}
+}
+
 // setMutiert erzeugt aus der Base-Fixture ein JSON mit einem geänderten Feld.
 // Wichtig: JEDE Variante startet von der unveränderten Base, damit frühere
 // Mutationen (z. B. name="Wiki") spätere Fälle nicht verfälschen.

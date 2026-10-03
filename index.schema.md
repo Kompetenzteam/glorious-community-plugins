@@ -3,7 +3,9 @@
 Dieses Dokument beschreibt den Repository-Vertrag `index.json` des Community-Plugin-Repositories
 (`glorious-community-plugins`). Die App lädt pro Repository genau diese eine Datei (HTTPS +
 ETag/304-Caching) und wählt daraus das passende Asset für `GOOS/GOARCH` aus. Ein lauffähiges
-Beispiel steht in [index.example.json](./index.example.json).
+Beispiel steht in [index.example.json](./index.example.json) — alle Werte dort sind offensichtliche
+Platzhalter (`example-plugin`, `0.0.0`, Wiederholungs-Hexwerte) und dürfen nicht verbatim übernommen
+werden. Hinweis: EU AI Act Art. 50 — dieses Dokument wurde mit KI-Unterstützung erstellt.
 
 Die Validierung ist **fail-closed**: Ein `index.json`, das gegen die Regeln unten verstößt, wird
 von der App komplett abgelehnt (keine Teilanzeige). Fehler sind nach Priorität geordnet — der
@@ -57,7 +59,7 @@ Ein fehlender Key für das eigene Laufzeit-Paar bedeutet: „Plattform nicht unt
 | Feld | Typ | Pflicht | Regel |
 |---|---|---|---|
 | `url` | string | ja | Direkter Download-Link auf die `.glorious-plugin`-Datei, darf nicht leer sein. In der Praxis: `https://github.com/<org>/<repo>/releases/download/<tag>/<datei>.glorious-plugin`. |
-| `sha256` | string | ja | Exakt **64 Hex-Zeichen** (`^[0-9a-fA-F]{64}$`). Wird beim Installieren gegen die heruntergeladene Datei geprüft (Transport-Schutz). Die Platzhalter in `index.example.json` sind formatgültig, aber nicht die echten Prüfsummen — vor dem Veröffentlichen mit `sha256sum` ersetzen. |
+| `sha256` | string | ja | Exakt **64 Hex-Zeichen** (`^[0-9a-fA-F]{64}$`). Wird beim Installieren gegen die heruntergeladene Datei geprüft (Transport-Schutz). Die Werte in `index.example.json` sind reine Wiederholungen (`000…0`, `111…1`, `222…2`) — formal gültig, aber **keine** echten Prüfsummen; vor dem Veröffentlichen mit `sha256sum` ersetzen. |
 | `signer_pubkey` | string | ja (de facto) | **Base64 (StdEncoding)** des 32-Byte-Ed25519-Public-Keys, mit dem das `manifest.json` im Asset signiert ist. Die App decodiert und verifiziert damit die Manifest-Signatur vor der Installation. Der Builder gibt den Wert mit `--print-pubkey` aus. |
 
 ## Validierungsreihenfolge (wie `internal/marketplace/index.go` `ParseIndex`)
