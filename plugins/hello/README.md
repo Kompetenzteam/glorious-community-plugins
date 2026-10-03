@@ -99,5 +99,17 @@ abgelegt, sondern über den Builder (`tools/build-plugin`) erzeugt und als
 GitHub-Release-Assets veröffentlicht. Für den Build werden keine
 speziellen Rechte benötigt — der Release-Workflow baut, validiert und
 signiert das Plugin automatisch. Das Archiv-Layout ist: `manifest.json`,
-`functions.json`, `README.md` und das Binary (`./plugin` bzw.
-`plugin.exe`) im Archiv-Root (Modus 0o755), optional unter `assets/`.
+`functions.json`, `README.md` und das Binary (`./hello` bzw.
+`hello.exe`) im Archiv-Root (Modus 0o755), optional unter `assets/`.
+
+## Entrypoint und Plattform (M1-Hinweis für Autoren)
+
+Der Plugin-Host löst den `entrypoint` aus `manifest.json` **wörtlich** relativ
+zum Arbeitsverzeichnis des Plugins auf — es gibt **keine** `.exe`-Inferenz.
+Ein einzelnes Manifest kann daher nicht gleichzeitig `./hello` (Unix) und
+`./hello.exe` (Windows) fordern. Empfohlener Weg (so macht es `release.yml`):
+das Repo-Manifest nennt den **Unix-Namen** (`./hello`) als Default, und der
+Release-Workflow patcht eine **Kopie** des Manifests je Matrix-Lauf
+(`windows-amd64` → `./hello.exe`, `linux`/`darwin` → `./hello`), bevor das ZIP
+gebaut wird. Das ZIP-Root-Binary heißt exakt so wie der gepatchte Entrypoint.
+Das Repo-Manifest selbst wird dabei **nie** verändert.

@@ -52,8 +52,11 @@ Vorlagen-Plugin — die minimale, lauffähige Struktur, die jedes Plugin mitbrin
   `## Beschreibung` + `## Berechtigungen`.
 - **Binary** — `main.go` ist eine Dummy-Implementierung: loggt beim Start
   `hello-plugin: started (version 0.1.1)` und antwortet auf stdin-Eingabe `ping` mit
-  `pong`. Der Entrypoint im Manifest (`./plugin`) muss zum Binary-Namen im ZIP passen
-  (`--binary plugin.exe` → `plugin.exe` im ZIP, Entrypoint `./plugin.exe`).
+  `pong`. Der Entrypoint im Manifest muss exakt zum Binary-Namen im ZIP passen
+  (`--binary hello.exe` → `hello.exe` im ZIP, Entrypoint `./hello.exe`). Der Host
+  löst den Entrypoint wörtlich auf (keine `.exe`-Inferenz); der Release-Workflow
+  patcht dafür eine Manifest-Kopie je Plattform (`./hello` unter Unix,
+  `./hello.exe` unter Windows).
 
 ## 3. index.json pflegen
 
@@ -115,8 +118,8 @@ go build -o build-plugin .
   --manifest ../../plugins/hello/manifest.json \
   --functions ../../plugins/hello/functions.json \
   --readme ../../plugins/hello/README.md \
-  --binary ../../plugins/hello/plugin.exe \
-  --out hello-0.1.1-windows-amd64.glorious-plugin \
+  --binary ../../plugins/hello/hello.exe \
+  --out hello-1.0.0-windows-amd64.glorious-plugin \
   --signing-key key.pem
 ```
 

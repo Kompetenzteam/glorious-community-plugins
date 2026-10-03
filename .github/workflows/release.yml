@@ -94,25 +94,57 @@ jobs:
         working-directory: plugins/${{ steps.tag.outputs.name }}
         run: |
           # Go-Plugins: direkt bauen. Andere Sprachen: build.sh bereitstellen.
+          # Das Binary heisst wie das Plugin (<name>), passend zum Manifest-
+          # Entrypoint ./<name> (bzw. ./<name>.exe unter Windows) — der
+          # Plugin-Host loest den Entrypoint WOERTLICH relativ zum Arbeits-
+          # verzeichnis auf und leitet KEINE .exe-Endung ab.
           if [[ -f go.mod ]]; then
             GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-              go build -trimpath -ldflags "-s -w" -o plugin${{ matrix.ext }} .
+              go build -trimpath -ldflags "-s -w" -o "${{ steps.tag.outputs.name }}${{ matrix.ext }}" .
           elif [[ -f build.sh ]]; then
-            GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} ./build.sh plugin${{ matrix.ext }}
+            GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} ./build.sh "${{ steps.tag.outputs.name }}${{ matrix.ext }}"
           else
             echo "plugins/<name> braucht go.mod oder build.sh." >&2
             exit 1
           fi
 
+      - name: Manifest-Entrypoint an die Plattform anpassen
+        id: entry
+        shell: bash
+        working-directory: plugins/${{ steps.tag.outputs.name }}
+        run: |
+          # M1-Fix: ein einziges Repo-Manifest kann nicht gleichzeitig "./hello"
+          # (Unix) und "./hello.exe" (Windows) fordern. Der Host loest den
+          # Entrypoint woertlich auf, wir patchen deshalb eine KOPIE des
+          # Manifests je Matrix-Lauf und lassen das Repo-Manifest unangetastet.
+          # Der Unix-Name ist der Repo-Default (./hello); Windows bekommt .exe.
+          cp manifest.json manifest.build.json
+          if [[ "${{ matrix.goos }}" == "windows" ]]; then
+            entry="./${{ steps.tag.outputs.name }}.exe"
+          else
+            entry="./${{ steps.tag.outputs.name }}"
+          fi
+          # Kein Heredoc: der YAML-Block-Skalar endet an einer Zeile ohne
+          # Einrueckung, ein Heredoc-Body auf Spalte 0 wuerde die YAML-Struktur
+          # zerstoeren. Daher ein einzelner python3 -c-Aufdruck.
+          python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p,encoding="utf-8")); d["entrypoint"]=sys.argv[2]; open(p,"w",encoding="utf-8").write(json.dumps(d,indent=2,ensure_ascii=False)+"\n")' manifest.build.json "$entry"
+          echo "entrypoint=$entry" >> "$GITHUB_OUTPUT"
+
       - name: Plugin-ZIP bauen, validieren und signieren
         shell: bash
         working-directory: plugins/${{ steps.tag.outputs.name }}
         run: |
+          set -euo pipefail
+          bin="${{ steps.tag.outputs.name }}${{ matrix.ext }}"
           out="../../${{ steps.tag.outputs.name }}-${{ matrix.goos }}-${{ matrix.goarch }}.glorious-plugin"
-          args=(--manifest manifest.json --functions functions.json --readme README.md
-                --binary "plugin${{ matrix.ext }}" --out "$out" --signing-key ../../key.pem)
+          # Das gepatchte Manifest (manifest.build.json) geht in das ZIP, damit
+          # der Entrypoint exakt zum Binary-Namen im Archiv passt (Windows:
+          # hello.exe). Die Signatur deckt damit das plattformkorrekte Manifest ab.
+          args=(--manifest manifest.build.json --functions functions.json --readme README.md
+                --binary "$bin" --out "$out" --signing-key ../../key.pem)
           [[ -d assets ]] && args+=(--asset assets)
           ../../build-plugin "${args[@]}"
+          rm -f manifest.build.json
 
       - name: Prüfsummen + Public Key ermitteln
         id: asset
@@ -121,7 +153,8 @@ jobs:
           file="${{ steps.tag.outputs.name }}-${{ matrix.goos }}-${{ matrix.goarch }}.glorious-plugin"
           echo "sha256=$(sha256sum "$file" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           echo "asset=$file" >> "$GITHUB_OUTPUT"
-          echo "pubkey=$(../../build-plugin --print-pubkey --signing-key ../../key.pem)" >> "$GITHUB_OUTPUT"
+          # build-plugin wurde ins Repo-Root gebaut; dieser Schritt läuft dort.
+          echo "pubkey=$(./build-plugin --print-pubkey --signing-key key.pem)" >> "$GITHUB_OUTPUT"
 
       - name: Release-Assets hochladen
         env:
