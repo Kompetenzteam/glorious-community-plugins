@@ -60,7 +60,11 @@ Vorlagen-Plugin — die minimale, lauffähige Struktur, die jedes Plugin mitbrin
   (`--binary hello.exe` → `hello.exe` im ZIP, Entrypoint `./hello.exe`). Der Host
   löst den Entrypoint wörtlich auf (keine `.exe`-Inferenz); der Release-Workflow
   patcht dafür eine Manifest-Kopie je Plattform (`./hello` unter Unix,
-  `./hello.exe` unter Windows). Ein Rezept für den manuellen ZIP-Bau ohne
+  `./hello.exe` unter Windows). **`build-plugin` erzwingt diese Gleichheit selbst
+  fail-closed** (`entryBase != binaryName` → Fehler, nicht bloß Warnung), damit
+  kein ZIP entsteht, das der Installer später nicht starten kann. Weil der
+  Workflow das Manifest **vor** dem Packen je Plattform patcht, blockiert das
+  keine legitimen Plattform-Patches. Ein Rezept für den manuellen ZIP-Bau ohne
   Release-Workflow steht in §5.
 
 ## 3. index.json pflegen
@@ -74,8 +78,13 @@ Checkliste pro Plugin-Eintrag:
 2. `platforms.<key>` für jede gebaute Plattform: `url` auf das Release-Asset, `sha256`
    von `sha256sum <datei>.glorious-plugin` (64 Hex), `signer_pubkey` aus
    `build-plugin --print-pubkey` (Base64 des 32-Byte-Ed25519-Public-Keys).
-3. `latest_version` und `changelog` aktualisieren.
-4. Wohlgeformtheit prüfen: `python -m json.tool index.json`.
+3. `latest_version` und `changelog` aktualisieren. (Ab dem Tag-Release erledigt
+   der Job `update-index` das automatisch für `sha256`, `latest_version`,
+   `changelog` und die Tag-Segmente der Asset-`url`s — siehe §4
+   „Workflow-Reihenfolge“.)
+4. Wohlgeformtheit + Schema prüfen: `python scripts/check_index.py index.json`
+   (Exit 0 = gültig, sonst rot). Das ist auch der Check, den `ci.yml` für
+   `index.json` fährt.
 
 ## 4. Neues Plugin veröffentlichen
 
@@ -176,8 +185,36 @@ Fehlt eines davon, wird die Pipeline **rot** (fail-closed), es läuft kein Teil-
 ### Workflow-Reihenfolge
 
 `release` (Matrix-Build + Signatur + Gitea-Release) → `mirror-github` (Gitea-Assets →
-GitHub) → `update-index` (pinnt `index.json` auf die ausgelieferten Gitea-Bytes) →
-`verify-consistency` (Gitea == GitHub == `index.json`, sonst rot).
+GitHub) → `update-index` (leitet `sha256`, `latest_version`, `changelog` **und** die
+Tag-Segmente der Asset-`url`s konsistent aus dem Release-Tag ab und pusht `index.json`
+auf `main`) → `verify-consistency` (Gitea == GitHub == `index.json`, sonst rot).
+
+### Runbook: `verify-consistency` ist rot
+
+`verify-consistency` vergleicht je Plattform-Asset **drei** Quellen:
+Gitea-Release-Asset (Source of Truth) == GitHub-Release-Asset == `index.json`. Der Job
+ist fail-closed und listet bei Abweichung `github=… index.json=…` bzw. die fehlenden
+Assets auf. Vorgehen, in dieser Reihenfolge:
+
+1. **Zuerst das Job-Log lesen.** Zwei Fehlerklassen:
+   - `Assets fehlen für die Konsistenzprüfung: <plugin>/<plat>: <datei> fehlt im
+     <Host>-Release` → ein Matrix-Bein hat kein Asset hochgeladen, oder `mirror-github`
+     hat es nicht gespiegelt.
+   - `HASH-MISMATCH <datei>: github=… index.json=…` → die Bytes weichen ab; fast immer
+     ist `index.json` veraltet oder wurde von Hand mit lokal gebauten Hashes gepflegt.
+2. **`index.json` prüfen und den Job neu anstoßen.** Der häufigste Fall ist ein alter
+   `index.json`. Weil `update-index` ihn automatisch aus den Release-Assets neu
+   schreibt, genügt ein Re-Run des Workflows für denselben Tag (Gitea → Actions → den
+   Lauf öffnen → *Re-run all jobs*); das läuft `update-index` erneut und danach
+   `verify-consistency`. Kein Handeditieren von Hashes.
+3. **Fehlendes Asset beheben.** Fehlt ein Plattform-Asset im Gitea-Release, den Matrix-
+   Build prüfen (`release`-Job) und den Tag neu auslösen. Fehlt es nur auf GitHub,
+   `mirror-github` und das Secret `GH_PAT` prüfen (siehe oben, fail-closed).
+4. **Erstlauf-Sonderfall.** Existiert zum Tag noch **kein** Release (z. B. weil noch
+   kein Tag gepusht wurde) bzw. fehlen die Secrets, ist rot **erwartet** und kein
+   Regressionssignal — dann zuerst Secret/Tag klären (§ unten), nicht `index.json`.
+5. **Nie** den Gate abschwächen oder Hashes von Hand „passend“ eintragen: der Sinn des
+   Jobs ist, dass `index.json` exakt die ausgelieferten Bytes beschreibt.
 
 ## 5. Lokal bauen (ohne CI)
 
