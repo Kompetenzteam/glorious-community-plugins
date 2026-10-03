@@ -563,6 +563,18 @@ func TestParseFunctionsFileBrokenProfileFieldsJSON(t *testing.T) {
 	}
 }
 
+// Weder Objekt noch Profilfeld → Fehler (Host: manifest.go validate, "at least
+// one object or profile field required").
+func TestParseFunctionsFileEmptyObjectsAndFields(t *testing.T) {
+	data, err := json.Marshal(FunctionsFile{Version: contractFunctionsVersion})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if _, err := parseFunctionsFile(data); err == nil {
+		t.Fatal("leere objects und profile_fields müssen abgelehnt werden")
+	}
+}
+
 // Regression: das ECHTE plugins/hello/functions.json muss durch den Validator
 // gehen (name/label/type/options/group/hint bleiben zulässig).
 func TestParseFunctionsFileRealHelloFixture(t *testing.T) {

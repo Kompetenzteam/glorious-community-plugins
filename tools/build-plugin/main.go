@@ -398,6 +398,9 @@ func parseFunctionsFile(data []byte) (*FunctionsFile, error) {
 	if len(ff.Objects) > maxPluginObjects {
 		return nil, fmt.Errorf("functions.json: %d Objekte überschreiten das Maximum von %d", len(ff.Objects), maxPluginObjects)
 	}
+	if len(ff.Objects) == 0 && len(ff.ProfileFields) == 0 {
+		return nil, errors.New("functions.json: mindestens ein Objekt oder Profilfeld erforderlich")
+	}
 	seen := make(map[string]bool, len(ff.Objects))
 	for _, obj := range ff.Objects {
 		if err := validateObject(obj, seen); err != nil {
