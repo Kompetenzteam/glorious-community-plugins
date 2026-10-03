@@ -5,14 +5,48 @@
 #
 # Der Workflow baut das Plugin-Binary in einer GOOS/GOARCH-Matrix, signiert das
 # manifest.json mit dem Ed25519-Key aus dem Secret SIGNING_KEY, validiert README
-# und functions.json, erzeugt die .glorious-plugin-ZIPs und veröffentlicht ein
-# GitHub-Release mit allen Assets.
+# und functions.json, erzeugt die .glorious-plugin-ZIPs und veröffentlicht das
+# Release auf GITEA (Source of Truth). Danach spiegelt der Job `mirror-github`
+# die Assets nach GitHub (Push-Mirror, der NUR Git-Refs spiegelt, keine Releases),
+# der Job `update-index` pinnt index.json auf die AUSGELIEFERTEN Bytes und
+# `verify-consistency` prüft abschließend Gitea-Asset == GitHub-Asset == index.json.
+#
+# Reihenfolge: release -> mirror-github -> update-index -> verify-consistency.
+# (update-index liest bewusst die GITEA-Bytes, weil Gitea die Quelle ist; der
+#  Mirror-Job läuft VORHER, damit die Konsistenzprüfung beide Hosts vorfindet.)
 #
 # Secrets (Repository > Settings > Secrets and variables > Actions):
-#   SIGNING_KEY   Ed25519-Private-Key des Autors — PKCS#8-PEM ("-----BEGIN PRIVATE
-#                 KEY-----", mehrzeilig) ODER Base64 davon. Wird NIE ausgegeben.
+#   SIGNING_KEY   PFLICHT. Ed25519-Private-Key des Autors — PKCS#8-PEM ("-----BEGIN
+#                 PRIVATE KEY-----", mehrzeilig) ODER Base64 davon. Wird NIE ausgegeben.
+#                 OHNE dieses Secret bricht der Workflow im Schritt "Signing-Key
+#                 bereitstellen" VOR jedem Build ab (fail-closed, alle Matrix-Beine
+#                 rot mit derselben Ursache). Einmalig setzen:
+#                   openssl genpkey -algorithm ed25519 -out key.pem
+#                   gh secret set SIGNING_KEY --repo <owner>/<repo> < key.pem
+#                 (oder Gitea: Repository > Settings > Actions > Secrets).
+#                 Siehe README §4 "Signing-Key".
+#
+#   GIT_TOKEN     PFLICHT für Release + Mirrors + index.json-Sync. Gitea-Token
+#                 (Source of Truth); Release-Assets und index.json liegen dort.
+#                 Benötigt Repo-Scope write:repository (Repo-Admin für Releases).
+#                 Ein reiner github.token reicht NICHT. Ohne das Secret bricht der
+#                 Schritt "Release-Assets hochladen" mit einem Publish-Fail-Fast ab.
+#                 Hinweis: Die Namen GITEA_TOKEN und GITHUB_TOKEN sind in Gitea
+#                 RESERVIERT (HTTP 400 "invalid variable or secret name") und
+#                 können nicht gesetzt werden — daher GIT_TOKEN.
+#                 Siehe README §4 "Publish-Secret".
+#
+#   GH_PAT        PFLICHT für den GitHub-Mirror. Classic GitHub-PAT (Scopes
+#                 repo + workflow) zum Anlegen des GitHub-Releases und Hochladen
+#                 der Assets. Ohne das Secret bricht der Job `mirror-github` ab
+#                 (fail-closed). Hinweis: GITHUB_PAT ist in Gitea ebenfalls
+#                 RESERVIERT (HTTP 400) — daher GH_PAT.
+#                 Siehe README §4 "GitHub-Mirror-Secret".
 #
 # MIT License — Vorlage für Plugin-Autoren, frei anpassbar.
+#
+# EU AI Act transparency notice (Art. 50, Regulation (EU) 2024/1689): Mit
+# KI-Unterstützung erstellt.
 name: Release Plugin
 
 on:
@@ -66,6 +100,17 @@ jobs:
         run: |
           # Akzeptiert PKCS#8-PEM und Base64(PEM). Das Secret wird nur in
           # key.pem materialisiert und ist nie in Logs/Outputs sichtbar.
+          #
+          # Fail-closed VOR jedem Build: fehlt das Secret (oder ist es leer),
+          # brechen wir hier mit einer Handlungsanweisung ab, statt den Fehler
+          # erst im Signieren-Schritt als kryptischen Key-Längenfehler zu
+          # zeigen. Der Fehlertext ist bewusst EINDEUTIG und nennt den Fix.
+          if [[ -z "${SIGNING_KEY:-}" ]]; then
+            echo "::error::Repository-Secret SIGNING_KEY fehlt oder ist leer. Ohne Ed25519-Signing-Key kann kein Plugin-ZIP signiert werden." >&2
+            echo "Fix: openssl genpkey -algorithm ed25519 -out key.pem && gh secret set SIGNING_KEY --repo '${GITHUB_REPOSITORY}' --body \"\$(cat key.pem)\"" >&2
+            echo "Oder: Repository > Settings > Secrets and variables > Actions > New repository secret 'SIGNING_KEY' (Inhalt von key.pem, PEM oder Base64). Siehe README §4." >&2
+            exit 1
+          fi
           printf '%s' "$SIGNING_KEY" > key.pem
           if ! grep -q -- "-----BEGIN" key.pem; then
             if ! base64 -d key.pem > key.dec 2>/dev/null; then
@@ -73,6 +118,13 @@ jobs:
               exit 1
             fi
             mv key.dec key.pem
+          fi
+          # Zweite Absicherung: der materialisierte Key muss ein Ed25519-PKCS#8-
+          # Key sein. Ein falsches Secret (z. B. ein abgeschnittener Wert)
+          # scheitert damit hier, nicht erst im teuren Matrix-Build.
+          if ! openssl pkey -in key.pem -noout >/dev/null 2>&1; then
+            echo "::error::SIGNING_KEY ist kein gültiger PKCS#8-Private-Key (openssl pkey lehnt ihn ab)." >&2
+            exit 1
           fi
         env:
           SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
@@ -94,25 +146,68 @@ jobs:
         working-directory: plugins/${{ steps.tag.outputs.name }}
         run: |
           # Go-Plugins: direkt bauen. Andere Sprachen: build.sh bereitstellen.
+          # Das Binary heisst wie das Plugin (<name>), passend zum Manifest-
+          # Entrypoint ./<name> (bzw. ./<name>.exe unter Windows) — der
+          # Plugin-Host loest den Entrypoint WOERTLICH relativ zum Arbeits-
+          # verzeichnis auf und leitet KEINE .exe-Endung ab.
           if [[ -f go.mod ]]; then
             GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-              go build -trimpath -ldflags "-s -w" -o plugin${{ matrix.ext }} .
+              go build -trimpath -ldflags "-s -w" -o "${{ steps.tag.outputs.name }}${{ matrix.ext }}" .
           elif [[ -f build.sh ]]; then
-            GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} ./build.sh plugin${{ matrix.ext }}
+            GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} ./build.sh "${{ steps.tag.outputs.name }}${{ matrix.ext }}"
           else
             echo "plugins/<name> braucht go.mod oder build.sh." >&2
             exit 1
           fi
 
+      - name: Manifest-Entrypoint an die Plattform anpassen
+        id: entry
+        shell: bash
+        working-directory: plugins/${{ steps.tag.outputs.name }}
+        run: |
+          # M1-Fix: ein einziges Repo-Manifest kann nicht gleichzeitig "./hello"
+          # (Unix) und "./hello.exe" (Windows) fordern. Der Host loest den
+          # Entrypoint woertlich auf, wir patchen deshalb eine KOPIE des
+          # Manifests je Matrix-Lauf und lassen das Repo-Manifest unangetastet.
+          # Der Unix-Name ist der Repo-Default (./hello); Windows bekommt .exe.
+          cp manifest.json manifest.build.json
+          if [[ "${{ matrix.goos }}" == "windows" ]]; then
+            entry="./${{ steps.tag.outputs.name }}.exe"
+          else
+            entry="./${{ steps.tag.outputs.name }}"
+          fi
+          # Kein Heredoc: der YAML-Block-Skalar endet an einer Zeile ohne
+          # Einrueckung, ein Heredoc-Body auf Spalte 0 wuerde die YAML-Struktur
+          # zerstoeren. Daher ein einzelner python3 -c-Aufdruck.
+          # python3 statt python: auf ubuntu-latest ist nur python3 garantiert;
+          # ein fehlendes python3 wuerde das Manifest sonst still unverändert
+          # lassen und der Build nur warnen (entrypoint != binary) statt failen.
+          py="$(command -v python3 || command -v python)"
+          if [[ -z "$py" ]]; then
+            echo "python3/python fehlt — Manifest-Patch nicht moeglich." >&2
+            exit 1
+          fi
+          "$py" -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p,encoding="utf-8")); d["entrypoint"]=sys.argv[2]; open(p,"w",encoding="utf-8").write(json.dumps(d,indent=2,ensure_ascii=False)+"\n")' manifest.build.json "$entry"
+          # Verifizieren, dass der Patch wirklich landete, statt dem Build zu
+          # vertrauen (er warnt nur, wenn Entrypoint != Binary-Name).
+          "$py" -c 'import json,sys; d=json.load(open("manifest.build.json",encoding="utf-8")); assert d["entrypoint"]==sys.argv[1], d["entrypoint"]' "$entry"
+          echo "entrypoint=$entry" >> "$GITHUB_OUTPUT"
+
       - name: Plugin-ZIP bauen, validieren und signieren
         shell: bash
         working-directory: plugins/${{ steps.tag.outputs.name }}
         run: |
+          set -euo pipefail
+          bin="${{ steps.tag.outputs.name }}${{ matrix.ext }}"
           out="../../${{ steps.tag.outputs.name }}-${{ matrix.goos }}-${{ matrix.goarch }}.glorious-plugin"
-          args=(--manifest manifest.json --functions functions.json --readme README.md
-                --binary "plugin${{ matrix.ext }}" --out "$out" --signing-key ../../key.pem)
+          # Das gepatchte Manifest (manifest.build.json) geht in das ZIP, damit
+          # der Entrypoint exakt zum Binary-Namen im Archiv passt (Windows:
+          # hello.exe). Die Signatur deckt damit das plattformkorrekte Manifest ab.
+          args=(--manifest manifest.build.json --functions functions.json --readme README.md
+                --binary "$bin" --out "$out" --signing-key ../../key.pem)
           [[ -d assets ]] && args+=(--asset assets)
           ../../build-plugin "${args[@]}"
+          rm -f manifest.build.json
 
       - name: Prüfsummen + Public Key ermitteln
         id: asset
@@ -121,12 +216,32 @@ jobs:
           file="${{ steps.tag.outputs.name }}-${{ matrix.goos }}-${{ matrix.goarch }}.glorious-plugin"
           echo "sha256=$(sha256sum "$file" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           echo "asset=$file" >> "$GITHUB_OUTPUT"
-          echo "pubkey=$(../../build-plugin --print-pubkey --signing-key ../../key.pem)" >> "$GITHUB_OUTPUT"
+          # build-plugin wurde ins Repo-Root gebaut; dieser Schritt läuft dort.
+          echo "pubkey=$(./build-plugin --print-pubkey --signing-key key.pem)" >> "$GITHUB_OUTPUT"
+
+      - name: ZIP validieren (Einträge, Entrypoint vs. Binary, Ed25519-Signatur)
+        shell: bash
+        run: |
+          # Verifiziert das soeben erzeugte Asset gegen den public Key des
+          # Signing-Keys. Ohne diesen Schritt war "validieren" im Build-Schritt
+          # nur eine Zusicherung; jetzt ist es ein Gate: Entrypoint muss im
+          # Archiv liegen und die Manifest-Signatur matchen.
+          go build -o verify-zip ./tools/build-plugin/verify-zip
+          ./verify-zip "${{ steps.asset.outputs.asset }}" key.pem
 
       - name: Release-Assets hochladen
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GIT_TOKEN }}
+          GH_HOST: ${{ github.server_url }}
         run: |
+          # Fail-closed: ohne Publish-Secret kann kein Release angelegt werden.
+          # CI läuft auf Gitea (Source of Truth); das Release und index.json
+          # liegen dort, github.token wäre still gegen den falschen Host.
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::Publish-Secret GIT_TOKEN fehlt oder ist leer. Release/index.json liegen auf Gitea (Source of Truth)." >&2
+            echo "Fix: Repository > Settings > Actions > Secrets > New secret 'GIT_TOKEN' (Repo-Scope write:repository, Admin für Releases). Siehe README §4 'Publish-Secret'." >&2
+            exit 1
+          fi
           asset="${{ steps.asset.outputs.asset }}"
           tag="${{ github.ref_name }}"
           # Release beim ersten Matrix-Job anlegen, danach Assets ergänzen.
@@ -154,7 +269,9 @@ jobs:
   # Die Dateien werden nach dem Upload erneut aus dem Release heruntergeladen und
   # gehasht — gemessen wird also exakt das, was ein Nutzer später herunterlädt.
   update-index:
-    needs: release
+    needs:
+      - release
+      - mirror-github
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -178,9 +295,14 @@ jobs:
       - name: index.json auf die Release-Asset-Hashes pinnen
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GIT_TOKEN }}
+          GH_HOST: ${{ github.server_url }}
         run: |
           set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::Publish-Secret GIT_TOKEN fehlt oder ist leer. Release-Assets liegen auf Gitea (Source of Truth)." >&2
+            exit 1
+          fi
           name="${{ steps.tag.outputs.name }}"
           version="${{ steps.tag.outputs.version }}"
           tag="${{ github.ref_name }}"
@@ -227,3 +349,180 @@ jobs:
           git add index.json
           git commit -m "chore(index): sync ${{ steps.tag.outputs.name }} ${{ steps.tag.outputs.version }} sha256 to published release assets"
           git push origin HEAD:main
+
+  # ---------------------------------------------------------------------------
+  # mirror-github: spiegelt die auf GITEA erzeugten Release-Assets nach GitHub.
+  #
+  # Warum ein eigener Job: Der GitHub-Repo ist ein Push-Mirror, der NUR Git-Refs
+  # spiegelt — Releases/Assets werden NICHT mitgespiegelt. Ohne diesen Job zeigen
+  # die in index.json hinterlegten Download-URLs (GitHub) ins Leere.
+  #
+  # Fail-closed: fehlt das Secret GH_PAT oder scheitert der Upload, wird der Job
+  # ROT und bricht damit die gesamte Pipeline ab (update-index/verify-consistency
+  # hängen per needs daran).
+  # ---------------------------------------------------------------------------
+  mirror-github:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: GitHub-Mirror vorbereiten
+        shell: bash
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # fail-closed: ohne GitHub-PAT kein Mirror.
+          if [[ -z "${GH_PAT:-}" ]]; then
+            echo "::error::Secret GH_PAT fehlt oder ist leer. Der GitHub-Mirror ist PFLICHT, sonst sind die Download-URLs in index.json tot." >&2
+            echo "Fix: Repository > Settings > Actions > Secrets > New secret 'GH_PAT' (classic PAT, Scopes repo + workflow). Siehe README §4 'GitHub-Mirror-Secret'." >&2
+            exit 1
+          fi
+          # fail-closed: ohne Gitea-Token können die Quell-Assets nicht geladen werden.
+          if [[ -z "${GIT_TOKEN:-}" ]]; then
+            echo "::error::Secret GIT_TOKEN fehlt oder ist leer — Quell-Assets des Releases sind nicht lesbar (Gitea = Source of Truth)." >&2
+            exit 1
+          fi
+
+          tag="${{ github.ref_name }}"
+          echo "Spiegele Release ${tag} von Gitea nach GitHub (${GH_REPOSITORY})."
+
+          # 1) Quelle: Gitea-Release + Asset-Liste (Assets liegen auf Gitea).
+          gitea_api="http://localhost:3000/api/v1/repos/${GH_REPOSITORY}"
+          curl -fsSL --max-time 60 \
+            -H "Authorization: token ${GIT_TOKEN}" \
+            "${gitea_api}/releases/tags/${tag}" \
+            -o release-gitea.json
+          asset_count="$(python3 -c 'import json;print(len(json.load(open("release-gitea.json"))["assets"]))')"
+          echo "Gitea-Assets gefunden: ${asset_count}"
+          if [[ "${asset_count}" -lt 1 ]]; then
+            echo "::error::Gitea-Release ${tag} hat keine Assets — nichts zu spiegeln." >&2
+            exit 1
+          fi
+
+          # 2) Ziel: GitHub-Release anlegen (idempotent) oder bestehendes holen.
+          export GH_TOKEN="${GH_PAT}"
+          if gh release view "$tag" --repo "$GH_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub-Release ${tag} existiert — Assets werden ersetzt."
+          else
+            gh release create "$tag" --repo "$GH_REPOSITORY" --title "$tag" \
+              --notes "Mirror of the Gitea release ${tag} (assets are published on Gitea first; this is a read-only mirror)."
+          fi
+
+          # 3) Assets von Gitea herunterladen und nach GitHub hochladen (clobber).
+          work="$(mktemp -d)"
+          python3 - "$PWD/release-gitea.json" <<'PY'
+          import json, sys
+          for a in json.load(open(sys.argv[1]))["assets"]:
+              print(f"{a['id']}\t{a['name']}")
+          PY
+          while IFS=$'\t' read -r aid name; do
+            echo "-> ${name}"
+            curl -fsSL --max-time 600 \
+              -H "Authorization: token ${GIT_TOKEN}" \
+              "${gitea_api}/releases/assets/${aid}" -o "${work}/${name}"
+            gh release upload "$tag" "${work}/${name}" --repo "$GH_REPOSITORY" --clobber
+          done < <(python3 - "$PWD/release-gitea.json" <<'PY'
+          import json, sys
+          for a in json.load(open(sys.argv[1]))["assets"]:
+              print(f"{a['id']}\t{a['name']}")
+          PY
+          )
+
+          echo "Mirror abgeschlossen: ${asset_count} Assets für ${tag} auf GitHub."
+          rm -f release-gitea.json
+
+  # ---------------------------------------------------------------------------
+  # verify-consistency: scharfer Konsistenz-Gate NACH Release + Mirror + index.
+  #
+  # Für jede Plattform eines Plugins wird der sha256 des Assets in DREI Quellen
+  # verglichen:
+  #   1) GitHub-Release-Asset  (Release-Download-URL aus index.json, "das
+  #      ausgelieferte Byte", das Nutzer tatsächlich herunterladen)
+  #   2) Gitea-Release-Asset   (Source of Truth)
+  #   3) index.json            (Katalog-Eintrag platform.<plat>.sha256)
+  # Alle drei müssen für JEDES Plattform-Asset identisch sein. Jede Abweichung
+  # macht den Job ROT und listet Asset-Name + alle drei Werte auf.
+  # ---------------------------------------------------------------------------
+  verify-consistency:
+    needs:
+      - release
+      - mirror-github
+      - update-index
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main (Katalog-Zweig)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Hash-Konsistenz Gitea == GitHub == index.json prüfen
+        shell: bash
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_PAT:-}" || -z "${GIT_TOKEN:-}" ]]; then
+            echo "::error::Für die Konsistenzprüfung sind GIT_TOKEN (Gitea) und GH_PAT (GitHub) PFLICHT." >&2
+            exit 1
+          fi
+          tag="${{ github.ref_name }}"
+          gitea_api="http://localhost:3000/api/v1/repos/${GH_REPOSITORY}"
+          work="$(mktemp -d)"
+          fail=0
+
+          # Gitea-Assets (Name -> id) und GitHub-Assets (Name -> browser_download_url).
+          curl -fsSL --max-time 60 -H "Authorization: token ${GIT_TOKEN}" \
+            "${gitea_api}/releases/tags/${tag}" -o "$work/gitea.json"
+          export GH_TOKEN="${GH_PAT}"
+          gh api "repos/${GH_REPOSITORY}/releases/tags/${tag}" > "$work/github.json"
+
+          python3 - "$GITHUB_WORKSPACE/index.json" "$work/gitea.json" "$work/github.json" <<'PY'
+          import json, sys
+          idx = json.load(open(sys.argv[1], encoding="utf-8"))
+          gitea = {a["name"]: a for a in json.load(open(sys.argv[2]))["assets"]}
+          github = {a["name"]: a for a in json.load(open(sys.argv[3]))["assets"]}
+          missing = []
+          for plugin in idx.get("plugins", []):
+              for plat, info in plugin.get("platforms", {}).items():
+                  fn = info["url"].rsplit("/", 1)[-1]
+                  if fn not in gitea:
+                      missing.append(f"{plugin['name']}/{plat}: {fn} fehlt im Gitea-Release")
+                  if fn not in github:
+                      missing.append(f"{plugin['name']}/{plat}: {fn} fehlt im GitHub-Release")
+          if missing:
+              print("::error::Assets fehlen für die Konsistenzprüfung:")
+              for m in missing:
+                  print("  -", m)
+              sys.exit(1)
+          print(f"OK: {sum(len(p.get('platforms', {})) for p in idx.get('plugins', []))} Plattform-Assets in beiden Releases vorhanden.")
+          PY
+
+          # Byte-genauer Vergleich: GitHub-Asset == Gitea-Asset == index.json.
+          export GH_TOKEN="${GH_PAT}"
+          gh release download "$tag" --repo "$GH_REPOSITORY" --dir "$work/gh" --clobber
+          while IFS= read -r fn; do
+            gitea_sha="$(sha256sum "$work/gh/${fn}" | awk '{print $1}')"
+            idx_sha="$(python3 - "$GITHUB_WORKSPACE/index.json" "$fn" <<'PY'
+          import json, sys
+          idx = json.load(open(sys.argv[1], encoding="utf-8"))
+          for p in idx.get("plugins", []):
+              for _, info in p.get("platforms", {}).items():
+                  if info["url"].rsplit("/", 1)[-1] == sys.argv[2]:
+                      print(info.get("sha256", ""))
+          PY
+          )"
+            echo "Asset ${fn}: github=${gitea_sha} index.json=${idx_sha}"
+            if [[ -z "${idx_sha}" || "${gitea_sha}" != "${idx_sha}" ]]; then
+              echo "::error::HASH-MISMATCH ${fn}: github=${gitea_sha} index.json=${idx_sha}" >&2
+              fail=1
+            fi
+          done < <(ls "$work/gh")
+          if [[ "$fail" -ne 0 ]]; then
+            echo "::error::Konsistenzprüfung fehlgeschlagen — GitHub-Assets und index.json weichen ab." >&2
+            exit 1
+          fi
+          echo "Konsistenzprüfung grün: alle Assets stimmen zwischen GitHub und index.json überein."
