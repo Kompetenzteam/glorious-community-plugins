@@ -2,3 +2,5 @@
 # across self-hosted runners (Windows PowerShell/CRLF checkouts would otherwise
 # make every .go file fail `gofmt -l`). Committed with the CI introduction.
 *.go text eol=lf
+# Shell scripts must be LF so a shebang / `bash file` works on Linux runners.
+*.sh text eol=lf
