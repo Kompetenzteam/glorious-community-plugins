@@ -786,14 +786,20 @@ jobs:
       - update-index
     runs-on: ubuntu-latest
     steps:
-      # Check out the SAME commit that triggered this run (github.sha), NOT a
-      # hardcoded 'main'. The workflow file and scripts/verify-consistency.sh
-      # must come from the same tree: pinning 'ref: main' made the job run the
-      # workflow's own step but checked out main, where the script did not
-      # exist yet -> 'bash: scripts/verify-consistency.sh: No such file or
-      # directory' (exit 127) while release/mirror/update-index were green.
-      - name: Checkout (getriggerter Commit)
+      # Check out the LIVE tip of main (not github.sha). Why: update-index runs
+      # just before this job and PUSHES a fresh index.json onto main, and the
+      # hash check must compare that fresh catalog entry against the assets that
+      # the very same run just built/published. github.sha is the commit of the
+      # triggering event and predates update-index's push, so it would hold a
+      # stale index.json and produce a false HASH-MISMATCH. 'ref: main' makes
+      # actions/checkout fetch origin/main at step time -> sees the new index.
+      # This only works because scripts/verify-consistency.sh now also lives on
+      # main; the earlier failure ('No such file or directory') was because the
+      # script existed only on the feature branch while this job pinned main.
+      - name: Checkout main (Katalog-Zweig, inkl. update-index-Push)
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Hash-Konsistenz Gitea == GitHub == index.json prüfen
         shell: bash
