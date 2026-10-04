@@ -20,23 +20,23 @@
       "icon_url": "https://raw.githubusercontent.com/Kompetenzteam/glorious-community-plugins/main/icons/hello.svg",
       "platforms": {
         "windows-amd64": {
-          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-1.0.0/hello-windows-amd64.glorious-plugin",
+          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-1.0.1/hello-windows-amd64.glorious-plugin",
           "sha256": "cd11cb9ef1e7cab00786bdefe38e4128f49e903945cabb0875bd6452d0252137",
           "signer_pubkey": "M8NWzAdHcZ7IQZtsDBwACAf8zjtuLFWrzcTkQJTiQ+o="
         },
         "linux-amd64": {
-          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-1.0.0/hello-linux-amd64.glorious-plugin",
+          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-1.0.1/hello-linux-amd64.glorious-plugin",
           "sha256": "81b7143a06f39dfb1d5b096ef4a21550e6acc9884404ccc1bbfbf72b81d97e44",
           "signer_pubkey": "M8NWzAdHcZ7IQZtsDBwACAf8zjtuLFWrzcTkQJTiQ+o="
         },
         "darwin-arm64": {
-          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-1.0.0/hello-darwin-arm64.glorious-plugin",
+          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-1.0.1/hello-darwin-arm64.glorious-plugin",
           "sha256": "3346dcd6524680dc683c6265813f6404f476b329a455b4e0374b69fe6068b54e",
           "signer_pubkey": "M8NWzAdHcZ7IQZtsDBwACAf8zjtuLFWrzcTkQJTiQ+o="
         }
       },
-      "latest_version": "1.0.0",
-      "changelog": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/tag/hello-1.0.0"
+      "latest_version": "1.0.1",
+      "changelog": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/tag/hello-1.0.1"
     }
   ]
 }
