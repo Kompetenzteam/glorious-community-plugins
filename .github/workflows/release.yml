@@ -19,9 +19,11 @@
 # manifest.json mit dem Ed25519-Key aus dem Secret SIGNING_KEY, validiert README
 # und functions.json, erzeugt die .glorious-plugin-ZIPs und veröffentlicht das
 # Release auf GITEA (Source of Truth). Danach spiegelt der Job `mirror-github`
-# die Assets nach GitHub (Push-Mirror, der NUR Git-Refs spiegelt, keine Releases),
-# der Job `update-index` pinnt index.json auf die AUSGELIEFERTEN Bytes und
-# `verify-consistency` prüft abschließend Gitea-Asset == GitHub-Asset == index.json.
+# die echten Asset-BYTES nach GitHub (Push-Mirror, der NUR Git-Refs spiegelt,
+# keine Releases; die Bytes kommen über den Gitea-Web-Downloadpfad, NICHT über
+# den API-Metadaten-Endpunkt), der Job `update-index` pinnt index.json auf die
+# AUSGELIEFERTEN Bytes und `verify-consistency` prüft abschließend
+# Gitea-Asset == GitHub-Asset == index.json.
 #
 # Reihenfolge: release -> mirror-github -> update-index -> verify-consistency.
 # (update-index liest bewusst die GITEA-Bytes, weil Gitea die Quelle ist; der
@@ -337,6 +339,31 @@ jobs:
           rel_id="$(jq -er '.id' release.json)"
           echo "release id=${rel_id}"
 
+          # Idempotent upload: Gitea does NOT deduplicate asset names, so every
+          # workflow run used to append another copy (release id=5 accumulated
+          # nine attachments, three per platform). Delete any existing asset
+          # with the SAME name first, then upload exactly one fresh copy. The
+          # name the API reports is the decoded file name, and the expected
+          # count is bounded by the matrix, so this stays a single asset per
+          # platform per release.
+          # NOTE: the API delete endpoint expects the NUMERIC attachment id,
+          # not the uuid — hence .id and never .uuid here.
+          echo "Raeume vorhandene Assets namens ${asset} auf (Idempotenz)."
+          # No pipefail here on purpose: an empty match makes jq exit 1, which
+          # would abort against the 'set -o pipefail' at the top of the step.
+          old_ids="$(curl -sS --max-time 60 "${auth[@]}" \
+            "${api}/releases/${rel_id}/assets?per_page=100" \
+            | jq -r --arg n "$asset" '.[] | select(.name==$n) | .id' || true)"
+          for old_id in ${old_ids}; do
+            del_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 "${auth[@]}" \
+              -X DELETE "${api}/releases/${rel_id}/assets/${old_id}")"
+            if [[ "${del_code:0:1}" != "2" ]]; then
+              echo "::error::Altes Asset ${asset} (id=${old_id}) konnte nicht entfernt werden (HTTP ${del_code})." >&2
+              exit 1
+            fi
+            echo "Altes Asset ${asset} (id=${old_id}) entfernt (HTTP ${del_code})."
+          done
+
           # Upload the built asset. Gitea expects the file name as the ?name=
           # query parameter and the bytes as application/octet-stream form data.
           up_code="$(curl -sS -o upload.json -w '%{http_code}' --max-time 600 "${auth[@]}" \
@@ -415,8 +442,13 @@ jobs:
           echo "Sync ${name} ${version} aus Release ${tag} nach index.json"
 
           # Asset-Hashes direkt aus dem veröffentlichten Release gewinnen.
-          # Fetch the release metadata, then download each asset by its API id
-          # (the same bytes a user will later download) and hash them.
+          # Download each asset from the Gitea WEB download path
+          #   /{owner}/{repo}/releases/download/{tag}/{name}
+          # which serves the real application/octet-stream bytes. Do NOT use
+          # /releases/{id}/assets/{attachment_id}: that endpoint returns the
+          # attachment METADATA as JSON (~250-270 bytes) regardless of Accept
+          # and has no download flag, which is exactly how the catalog ended up
+          # pinned to metadata hashes instead of the shipped bundles.
           tmp="$(mktemp -d)"
           rel_code="$(curl -sS -o "$tmp/release.json" -w '%{http_code}' --max-time 60 "${auth[@]}" \
             "${api}/releases/tags/${tag}")"
@@ -432,14 +464,25 @@ jobs:
             echo "::error::Gitea-Release ${tag} hat keine Assets — keine Hashes ableitbar." >&2
             exit 1
           fi
-          # Release id from the same response — required by the asset download
-          # endpoint /releases/{id}/assets/{attachment_id} (Gitea has no
-          # /releases/assets/{id} shortcut).
-          rel_id="$(jq -er '.id' "$tmp/release.json")"
-          while IFS=$'\t' read -r aid aname; do
+          # The release's own asset list is authoritative for the asset names.
+          # Gitea allows duplicate names, so iterate the UNIQUE names and pull
+          # each once via the web download path. Verify the byte count against
+          # the size the API reports before hashing, so a truncated/HTML body
+          # fails loudly instead of pinning a wrong sha256.
+          gitea_web="${GITEA_URL%/}/${GH_REPOSITORY}"
+          jq -r '.assets[].name' "$tmp/release.json" | sort -u | while IFS= read -r aname; do
+            [[ -n "${aname}" ]] || continue
+            exp_size="$(jq -er --arg n "$aname" '[.assets[] | select(.name==$n)][0].size' "$tmp/release.json")"
+            enc_name="$(jq -rn --arg n "$aname" '$n|@uri')"
             curl -fsSL --max-time 600 "${auth[@]}" \
-              "${api}/releases/${rel_id}/assets/${aid}" -o "$tmp/${aname}"
-          done < <(jq -r '.assets[] | "\(.id)\t\(.name)"' "$tmp/release.json")
+              "${gitea_web}/releases/download/${tag}/${enc_name}" -o "$tmp/${aname}"
+            got_size="$(wc -c < "$tmp/${aname}" | tr -d ' ')"
+            if [[ "${got_size}" != "${exp_size}" ]]; then
+              echo "::error::Gitea-Download ${aname} hat ${got_size} Bytes, erwartet ${exp_size}." >&2
+              exit 1
+            fi
+            echo "Quelle ${aname}: ${got_size} Bytes (Gitea-Web-Download, echte Bytes)."
+          done
           # Only .glorious-plugin assets are hashed; fail if none matched.
           if ! ls "$tmp"/*.glorious-plugin >/dev/null 2>&1; then
             echo "::error::Keine .glorious-plugin-Assets im Release ${tag} gefunden." >&2
@@ -659,27 +702,48 @@ jobs:
           echo "GitHub release id=${gh_release_id}"
 
           # 3) Assets von Gitea herunterladen und nach GitHub hochladen.
-          #    First drop any same-named GitHub asset so the upload replaces it
-          #    (the old '--clobber' semantics), then POST the new bytes to the
-          #    uploads endpoint parsed from the release's upload_url.
+          #    CRITICAL: download the REAL bytes, never the API asset endpoint
+          #    /releases/{id}/assets/{attachment_id}. That endpoint returns
+          #    attachment METADATA as JSON (~250-270 bytes) even for private
+          #    repos and even when Accept: application/octet-stream is sent —
+          #    it accepts no download flag at all (verified against Gitea
+          #    1.27.2 + OpenAPI). Mirroring it produced 263/264/266-byte JSON
+          #    blobs on GitHub instead of the ~3 MB bundles.
+          #
+          #    Use the web download path instead:
+          #      /{owner}/{repo}/releases/download/{tag}/{name}
+          #    It serves application/octet-stream and works for a private repo
+          #    with the token header, while the anonymous request 404s. The
+          #    bytes are fetched BACK from Gitea (the published source), not
+          #    from the local build output. Each download is verified against
+          #    the size the API reports before it is pushed to GitHub, so a
+          #    truncated/HTML body aborts the job instead of poisoning the
+          #    mirror.
           upload_url="$(jq -er '.upload_url' gh-release.json | sed 's/{?name,label}//')"
-          # Gitea release id — partner of the asset download endpoint
-          # /releases/{id}/assets/{attachment_id} used below.
-          g_rel_id="$(jq -er '.id' release-gitea.json)"
+          gitea_web="${GITEA_URL%/}/${GH_REPOSITORY}"
           work="$(mktemp -d)"
-          while IFS=$'\t' read -r aid aname; do
+          mirrored=0
+          while IFS=$'\t' read -r aid aname asize; do
             echo "-> ${aname}"
+            enc_name="$(jq -rn --arg n "$aname" '$n|@uri')"
             curl -fsSL --max-time 600 \
-              -H "Authorization: token ${GIT_TOKEN}" \
-              "${gitea_api}/releases/${g_rel_id}/assets/${aid}" -o "${work}/${aname}"
-            # Remove a pre-existing asset with the same name (idempotent rerun).
+              -H "Authorization: token ***" \
+              "${gitea_web}/releases/download/${tag}/${enc_name}" -o "${work}/${aname}"
+            got_bytes="$(wc -c < "${work}/${aname}" | tr -d ' ')"
+            if [[ "${got_bytes}" != "${asize}" ]]; then
+              echo "::error::Gitea-Download ${aname} hat ${got_bytes} Bytes, erwartet ${asize} — Abbruch (kein Metadaten-JSON spiegeln)." >&2
+              exit 1
+            fi
+            # Remove a pre-existing GitHub asset with the same name so the
+            # upload replaces it (the old '--clobber' semantics). The GitHub
+            # list endpoint returns .id, which is what the delete endpoint needs.
             old_id="$(curl -sS --max-time 60 "${gh_headers[@]}" \
               "${gh_api}/repos/${GH_REPOSITORY}/releases/${gh_release_id}/assets?per_page=100" \
-              | jq -r --arg n "$aname" '.[] | select(.name==$n) | .id')"
-            if [[ -n "${old_id}" ]]; then
+              | jq -r --arg n "$aname" '.[] | select(.name==$n) | .id' || true)"
+            for oid in ${old_id}; do
               curl -sS -o /dev/null -X DELETE --max-time 60 "${gh_headers[@]}" \
-                "${gh_api}/repos/${GH_REPOSITORY}/releases/assets/${old_id}"
-            fi
+                "${gh_api}/repos/${GH_REPOSITORY}/releases/assets/${oid}"
+            done
             up_code="$(curl -sS -o upload-gh.json -w '%{http_code}' --max-time 600 "${gh_headers[@]}" \
               -H 'Content-Type: application/octet-stream' -X POST \
               --data-binary "@${work}/${aname}" \
@@ -689,9 +753,18 @@ jobs:
               cat upload-gh.json >&2
               exit 1
             fi
-          done < <(jq -r '.assets[] | "\(.id)\t\(.name)"' release-gitea.json)
+            sha="$(sha256sum "${work}/${aname}" | awk '{print $1}')"
+            echo "SPIEGEL-OK ${aname} bytes=${got_bytes} sha256=${sha} -> GitHub ${up_code}"
+            mirrored=$((mirrored + 1))
+          done < <(jq -r '.assets[] | "\(.id)\t\(.name)\t\(.size)"' release-gitea.json)
 
-          echo "Mirror abgeschlossen: ${asset_count} Assets für ${tag} auf GitHub."
+          # Fail-closed: the number of mirrored assets must match the source
+          # release, otherwise the mirror is silently incomplete.
+          if [[ "${mirrored}" -ne "${asset_count}" ]]; then
+            echo "::error::Nur ${mirrored} von ${asset_count} Gitea-Assets gespiegelt — Abbruch." >&2
+            exit 1
+          fi
+          echo "Mirror abgeschlossen: ${mirrored} Assets (echte Bytes) fuer ${tag} auf GitHub."
           rm -f release-gitea.json gh-release.json
 
   # ---------------------------------------------------------------------------
@@ -790,18 +863,36 @@ jobs:
           PY
 
           # Byte-genauer Vergleich: GitHub-Asset == Gitea-Asset == index.json.
-          # Download each GitHub release asset via the REST API (the runner
-          # image has no gh). Use the per-asset API endpoint with
-          # Accept: application/octet-stream; browser_download_url is not
-          # usable for a private repo from CI without a browser session.
-          mkdir -p "$work/gh"
+          # Both sides are downloaded as the REAL bytes and hashed. The GitHub
+          # API asset endpoint with Accept: application/octet-stream does serve
+          # the bytes (the same path the catalog download uses), and Gitea is
+          # read back via its WEB download path
+          #   /{owner}/{repo}/releases/download/{tag}/{name}
+          # (the API /releases/{id}/assets/{id} endpoint returns metadata JSON,
+          # which must never be hashed here).
+          mkdir -p "$work/gh" "$work/gt"
           while IFS=$'\t' read -r aname aurl; do
             curl -fsSL --max-time 600 "${gh_headers[@]}" \
               -H "Accept: application/octet-stream" \
               "$aurl" -o "$work/gh/${aname}"
           done < <(jq -r '.assets[] | "\(.name)\t\(.url)"' "$work/github.json")
+
+          gitea_web="${GITEA_URL%/}/${GH_REPOSITORY}"
+          while IFS=$'\t' read -r aname asize; do
+            enc_name="$(jq -rn --arg n "$aname" '$n|@uri')"
+            curl -fsSL --max-time 600 \
+              -H "Authorization: token ***" \
+              "${gitea_web}/releases/download/${tag}/${enc_name}" -o "$work/gt/${aname}"
+            got="$(wc -c < "$work/gt/${aname}" | tr -d ' ')"
+            if [[ "${got}" != "${asize}" ]]; then
+              echo "::error::Gitea-Download ${aname} hat ${got} Bytes, erwartet ${asize}." >&2
+              exit 1
+            fi
+          done < <(jq -r '.assets[] | "\(.name)\t\(.size)"' "$work/gitea.json" | sort -u)
+
           while IFS= read -r fn; do
             gh_sha="$(sha256sum "$work/gh/${fn}" | awk '{print $1}')"
+            gt_sha="$(sha256sum "$work/gt/${fn}" | awk '{print $1}')"
             idx_sha="$(python3 - "$GITHUB_WORKSPACE/index.json" "$fn" <<'PY'
           import json, sys
           idx = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -811,9 +902,9 @@ jobs:
                       print(info.get("sha256", ""))
           PY
           )"
-            echo "Asset ${fn}: github=${gh_sha} index.json=${idx_sha}"
-            if [[ -z "${idx_sha}" || "${gh_sha}" != "${idx_sha}" ]]; then
-              echo "::error::HASH-MISMATCH ${fn}: github=${gh_sha} index.json=${idx_sha}" >&2
+            echo "Asset ${fn}: github=${gh_sha} gitea=${gt_sha} index.json=${idx_sha}"
+            if [[ -z "${idx_sha}" || "${gh_sha}" != "${idx_sha}" || "${gh_sha}" != "${gt_sha}" ]]; then
+              echo "::error::HASH-MISMATCH ${fn}: github=${gh_sha} gitea=${gt_sha} index.json=${idx_sha}" >&2
               fail=1
             fi
           done < <(ls "$work/gh")
