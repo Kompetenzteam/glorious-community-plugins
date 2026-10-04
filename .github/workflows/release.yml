@@ -3,6 +3,18 @@
 # Tag-getriggert: git tag <plugin>-<version> && git push origin <tag>
 # z. B. `wiki-1.2.0` -> Plugin "wiki", Version "1.2.0".
 #
+# Zusätzlich manuell auslösbar (workflow_dispatch) mit Input `version` — damit
+# lässt sich die Pipeline end-to-end OHNE Tag verifizieren. Ein manueller Lauf
+# legt KEINEN Git-Tag an; er baut/veröffentlicht lediglich genau den Tag, der im
+# Input `version` steht (z. B. hello-9.9.9). Der Tag-Push-Trigger bleibt aktiv.
+#
+# Gitea-Zugriff: Alle Gitea-Operationen (Release anlegen, Assets hochladen,
+# Assets/Hashes lesen) laufen über die Gitea-REST-API mit `curl`, NICHT über die
+# gh-CLI (im Runner-Image nicht vorhanden). Der GitHub-Mirror nutzt ebenfalls
+# `curl` gegen api.github.com. Die Gitea-Basis-URL kommt aus der Workflow-Env
+# `GITEA_URL` (Default http://glorious-gitea-1:3000 im Runner-Netz) — niemals
+# localhost:3000 (= der Container selbst) und niemals github.server_url.
+#
 # Der Workflow baut das Plugin-Binary in einer GOOS/GOARCH-Matrix, signiert das
 # manifest.json mit dem Ed25519-Key aus dem Secret SIGNING_KEY, validiert README
 # und functions.json, erzeugt die .glorious-plugin-ZIPs und veröffentlicht das
@@ -22,8 +34,10 @@
 #                 bereitstellen" VOR jedem Build ab (fail-closed, alle Matrix-Beine
 #                 rot mit derselben Ursache). Einmalig setzen:
 #                   openssl genpkey -algorithm ed25519 -out key.pem
-#                   gh secret set SIGNING_KEY --repo <owner>/<repo> < key.pem
-#                 (oder Gitea: Repository > Settings > Actions > Secrets).
+#                   (GitHub: gh secret set SIGNING_KEY --repo <owner>/<repo> < key.pem)
+#                 (oder Gitea: Repository > Settings > Actions > Secrets — dort den
+#                  Inhalt von key.pem als Secret SIGNING_KEY anlegen; die gh-CLI ist
+#                  im Gitea-Runner-Image nicht vorhanden).
 #                 Siehe README §4 "Signing-Key".
 #
 #   GIT_TOKEN     PFLICHT für Release + Mirrors + index.json-Sync. Gitea-Token
@@ -54,9 +68,24 @@ on:
     tags:
       - "*-*.*.*" # Plugin-Tags im Format <plugin>-<version> (SemVer), z. B. hello-0.1.0.
                   # Bootstrap-Tags wie v0.1.0 (manuell erstellte Team-Releases) triggern den Workflow nicht.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Tag to build/verify, e.g. hello-9.9.9 (no tag is created/pushed by this workflow)."
+        required: false
+        default: "1.0.0"
+
+# Base URL of the Gitea instance that acts as the Source of Truth (hosts the
+# release, the release assets and index.json). Must be reachable from inside
+# the runner job container: the runner network resolves the Gitea service by
+# its compose service name (http://glorious-gitea-1:3000), NOT via
+# localhost:3000 and NOT via the public github.server_url. Override per-run
+# by exporting GITEA_URL in the job/step env when the topology differs.
+env:
+  GITEA_URL: "http://glorious-gitea-1:3000"
 
 permissions:
-  contents: write # für gh release create
+  contents: write # for release/index.json writes via the Gitea REST API
 
 jobs:
   release:
@@ -75,7 +104,13 @@ jobs:
             ext: ""
     runs-on: ubuntu-latest
     env:
-      PLUGIN_NAME: ${{ github.ref_name }} # z. B. wiki-1.2.0
+      # PLUGIN_NAME carries the release tag. For a tag push it is github.ref_name
+      # (e.g. wiki-1.2.0). For a manual workflow_dispatch run there is no tag, so
+      # we fall back to the 'version' input (a caller-supplied tag such as
+      # hello-9.9.9) and, if that is empty, to a safe default. A workflow_dispatch
+      # run therefore only VERIFIES the pipeline end to end; it never creates a
+      # git tag (the workflow never runs 'git tag'/'git push' of a tag).
+      PLUGIN_NAME: ${{ github.event.inputs.version || github.ref_name }}
       GO_VERSION: "1.26"
     steps:
       - name: Checkout
@@ -221,37 +256,99 @@ jobs:
 
       - name: ZIP validieren (Einträge, Entrypoint vs. Binary, Ed25519-Signatur)
         shell: bash
+        # The Go module that owns verify-zip is tools/build-plugin; there is NO
+        # go.mod at the repo root. Running 'go build' at the root therefore
+        # aborts with "go: cannot find main module, but found .git/config".
+        # Build inside the module directory and emit the binary to the repo root,
+        # where key.pem and the built asset live (earlier steps run at the root).
+        working-directory: tools/build-plugin
         run: |
           # Verifiziert das soeben erzeugte Asset gegen den public Key des
           # Signing-Keys. Ohne diesen Schritt war "validieren" im Build-Schritt
           # nur eine Zusicherung; jetzt ist es ein Gate: Entrypoint muss im
           # Archiv liegen und die Manifest-Signatur matchen.
-          go build -o verify-zip ./tools/build-plugin/verify-zip
-          ./verify-zip "${{ steps.asset.outputs.asset }}" key.pem
+          # Fail-closed: a build failure must abort before the release is
+          # published, so the gate cannot silently pass.
+          go build -o ../../verify-zip ./verify-zip
+          ../../verify-zip "../../${{ steps.asset.outputs.asset }}" ../../key.pem
 
-      - name: Release-Assets hochladen
+      - name: Release-Assets hochladen (Gitea REST API)
         env:
-          GH_TOKEN: ${{ secrets.GIT_TOKEN }}
-          GH_HOST: ${{ github.server_url }}
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
+          GH_REPOSITORY: ${{ github.repository }}
         run: |
-          # Fail-closed: ohne Publish-Secret kann kein Release angelegt werden.
-          # CI läuft auf Gitea (Source of Truth); das Release und index.json
-          # liegen dort, github.token wäre still gegen den falschen Host.
-          if [[ -z "${GH_TOKEN:-}" ]]; then
+          set -euo pipefail
+          # Fail-closed: without the publish secret no release can be created.
+          # CI runs on Gitea (Source of Truth); the release and index.json live
+          # there, so a bare github.token would silently target the wrong host.
+          if [[ -z "${GIT_TOKEN:-}" ]]; then
             echo "::error::Publish-Secret GIT_TOKEN fehlt oder ist leer. Release/index.json liegen auf Gitea (Source of Truth)." >&2
             echo "Fix: Repository > Settings > Actions > Secrets > New secret 'GIT_TOKEN' (Repo-Scope write:repository, Admin für Releases). Siehe README §4 'Publish-Secret'." >&2
             exit 1
           fi
-          asset="${{ steps.asset.outputs.asset }}"
-          tag="${{ github.ref_name }}"
-          # Release beim ersten Matrix-Job anlegen, danach Assets ergänzen.
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "$asset" --clobber
-          else
-            gh release create "$tag" "$asset" \
-              --title "$tag" \
-              --notes "Plugin $tag — Assets siehe unten. Prüfsummen und signer_pubkey werden nach dem Workflow-Lauf aus den Job-Logs übernommen (siehe README §3)."
+          # The Gitea base URL is configured via the workflow env GITEA_URL
+          # (see top of file). It must be reachable from inside the job
+          # container — localhost:3000 points at the container itself and the
+          # public github.server_url is the host-facing URL, so neither works.
+          if [[ -z "${GITEA_URL:-}" ]]; then
+            echo "::error::GITEA_URL ist nicht gesetzt (Workflow-env fehlt)." >&2
+            exit 1
           fi
+          asset="${{ steps.asset.outputs.asset }}"
+          tag="${{ steps.tag.outputs.name }}-${{ steps.tag.outputs.version }}"
+          repo="${GH_REPOSITORY}"
+          api="${GITEA_URL%/}/api/v1/repos/${repo}"
+          auth=( -H "Authorization: token ${GIT_TOKEN}" )
+
+          # Fail-closed preflight: never publish blind. A GET that is not 2xx
+          # (bad token / wrong host / missing repo) aborts here.
+          code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 "${auth[@]}" "${api}/releases")"
+          if [[ "${code:0:1}" != "2" ]]; then
+            echo "::error::Gitea-API ${api}/releases antwortete mit HTTP ${code} — Token/Host pruefen (GITEA_URL=${GITEA_URL})." >&2
+            exit 1
+          fi
+
+          # Release is idempotent: POST creates it (or fails if the tag already
+          # has a release); GET by tag returns the existing one. Required field
+          # per CreateReleaseOption is tag_name; draft/prerelease are explicit
+          # so provider defaults cannot flip them. The API response is a Release
+          # object whose integer 'id' is what the asset-upload endpoint needs.
+          rel_code="$(curl -sS -o release.json -w '%{http_code}' --max-time 60 "${auth[@]}" \
+            "${api}/releases/tags/${tag}")"
+          if [[ "${rel_code:0:1}" == "2" ]]; then
+            echo "Release ${tag} existiert bereits — Assets werden ergaenzt."
+          else
+            body="Plugin ${tag} — Assets siehe unten. Pruefsummen und signer_pubkey werden nach dem Workflow-Lauf aus den Job-Logs uebernommen (siehe README §3)."
+            payload="$(jq -n --arg tag "$tag" --arg name "$tag" --arg body "$body" \
+              '{tag_name:$tag, name:$name, body:$body, draft:false, prerelease:false}')"
+            rel_code="$(curl -sS -o release.json -w '%{http_code}' --max-time 60 "${auth[@]}" \
+              -H 'Content-Type: application/json' -X POST \
+              --data-binary "$payload" "${api}/releases")"
+            if [[ "${rel_code:0:1}" != "2" ]]; then
+              echo "::error::Release ${tag} konnte nicht angelegt werden (HTTP ${rel_code})." >&2
+              cat release.json >&2
+              exit 1
+            fi
+            echo "Release ${tag} angelegt."
+          fi
+
+          # Release id from the API response — jq fails the step if absent, so
+          # the upload can never run with an empty id.
+          rel_id="$(jq -er '.id' release.json)"
+          echo "release id=${rel_id}"
+
+          # Upload the built asset. Gitea expects the file name as the ?name=
+          # query parameter and the bytes as application/octet-stream form data.
+          up_code="$(curl -sS -o upload.json -w '%{http_code}' --max-time 600 "${auth[@]}" \
+            -H 'Content-Type: application/octet-stream' -X POST \
+            --data-binary "@${asset}" \
+            "${api}/releases/${rel_id}/assets?name=$(jq -rn --arg n "$asset" '$n|@uri')")"
+          if [[ "${up_code:0:1}" != "2" ]]; then
+            echo "::error::Asset ${asset} konnte nicht hochgeladen werden (HTTP ${up_code})." >&2
+            cat upload.json >&2
+            exit 1
+          fi
+          echo "Asset ${asset} hochgeladen (HTTP ${up_code})."
 
       - name: Zusammenfassung (für index.json-Pflege)
         shell: bash
@@ -285,7 +382,7 @@ jobs:
         id: tag
         shell: bash
         env:
-          PLUGIN_NAME: ${{ github.ref_name }}
+          PLUGIN_NAME: ${{ github.event.inputs.version || github.ref_name }}
         run: |
           name="${PLUGIN_NAME%-*}"
           version="${PLUGIN_NAME##*-}"
@@ -295,22 +392,59 @@ jobs:
       - name: index.json auf die Release-Asset-Hashes pinnen
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GIT_TOKEN }}
-          GH_HOST: ${{ github.server_url }}
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
+          GH_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if [[ -z "${GH_TOKEN:-}" ]]; then
+          if [[ -z "${GIT_TOKEN:-}" ]]; then
             echo "::error::Publish-Secret GIT_TOKEN fehlt oder ist leer. Release-Assets liegen auf Gitea (Source of Truth)." >&2
+            exit 1
+          fi
+          # Gitea base URL comes from the workflow env (see top of file); it is
+          # the container-reachable service URL, not localhost/github.server_url.
+          if [[ -z "${GITEA_URL:-}" ]]; then
+            echo "::error::GITEA_URL ist nicht gesetzt (Workflow-env fehlt)." >&2
             exit 1
           fi
           name="${{ steps.tag.outputs.name }}"
           version="${{ steps.tag.outputs.version }}"
-          tag="${{ github.ref_name }}"
+          tag="${name}-${version}"
+          repo="${GH_REPOSITORY}"
+          api="${GITEA_URL%/}/api/v1/repos/${repo}"
+          auth=( -H "Authorization: token ${GIT_TOKEN}" )
           echo "Sync ${name} ${version} aus Release ${tag} nach index.json"
 
           # Asset-Hashes direkt aus dem veröffentlichten Release gewinnen.
+          # Fetch the release metadata, then download each asset by its API id
+          # (the same bytes a user will later download) and hash them.
           tmp="$(mktemp -d)"
-          gh release download "$tag" --repo "${{ github.repository }}" --dir "$tmp" --clobber
+          rel_code="$(curl -sS -o "$tmp/release.json" -w '%{http_code}' --max-time 60 "${auth[@]}" \
+            "${api}/releases/tags/${tag}")"
+          if [[ "${rel_code:0:1}" != "2" ]]; then
+            echo "::error::Gitea-Release ${tag} nicht lesbar (HTTP ${rel_code})." >&2
+            cat "$tmp/release.json" >&2
+            exit 1
+          fi
+          # Fail-closed: an empty asset list must not produce an empty hash file
+          # that then silently leaves index.json unchanged.
+          asset_count="$(jq -er '.assets | length' "$tmp/release.json")"
+          if [[ "${asset_count}" -lt 1 ]]; then
+            echo "::error::Gitea-Release ${tag} hat keine Assets — keine Hashes ableitbar." >&2
+            exit 1
+          fi
+          # Release id from the same response — required by the asset download
+          # endpoint /releases/{id}/assets/{attachment_id} (Gitea has no
+          # /releases/assets/{id} shortcut).
+          rel_id="$(jq -er '.id' "$tmp/release.json")"
+          while IFS=$'\t' read -r aid aname; do
+            curl -fsSL --max-time 600 "${auth[@]}" \
+              "${api}/releases/${rel_id}/assets/${aid}" -o "$tmp/${aname}"
+          done < <(jq -r '.assets[] | "\(.id)\t\(.name)"' "$tmp/release.json")
+          # Only .glorious-plugin assets are hashed; fail if none matched.
+          if ! ls "$tmp"/*.glorious-plugin >/dev/null 2>&1; then
+            echo "::error::Keine .glorious-plugin-Assets im Release ${tag} gefunden." >&2
+            exit 1
+          fi
           (cd "$tmp" && sha256sum *.glorious-plugin > "$GITHUB_WORKSPACE/asset-hashes.txt")
           cat "$GITHUB_WORKSPACE/asset-hashes.txt"
 
@@ -431,7 +565,23 @@ jobs:
   mirror-github:
     needs: release
     runs-on: ubuntu-latest
+    env:
+      # Fixed, public GitHub coordinates for the mirror target. Kept as env so
+      # the api.github.com calls below cannot accidentally target the Gitea
+      # host (which is the case when reusing github.server_url on a Gitea run).
+      GH_API: "https://api.github.com"
     steps:
+      - name: Plugin-Name und Version aus dem Tag ableiten
+        id: tag
+        shell: bash
+        env:
+          PLUGIN_NAME: ${{ github.event.inputs.version || github.ref_name }}
+        run: |
+          name="${PLUGIN_NAME%-*}"
+          version="${PLUGIN_NAME##*-}"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: GitHub-Mirror vorbereiten
         shell: bash
         env:
@@ -451,17 +601,31 @@ jobs:
             echo "::error::Secret GIT_TOKEN fehlt oder ist leer — Quell-Assets des Releases sind nicht lesbar (Gitea = Source of Truth)." >&2
             exit 1
           fi
+          # Gitea base URL from the workflow env (container-reachable); the
+          # GitHub side uses the fixed GH_API host, never github.server_url.
+          if [[ -z "${GITEA_URL:-}" ]]; then
+            echo "::error::GITEA_URL ist nicht gesetzt (Workflow-env fehlt)." >&2
+            exit 1
+          fi
 
-          tag="${{ github.ref_name }}"
+          name="${{ steps.tag.outputs.name }}"
+          version="${{ steps.tag.outputs.version }}"
+          tag="${name}-${version}"
           echo "Spiegele Release ${tag} von Gitea nach GitHub (${GH_REPOSITORY})."
 
+          gitea_api="${GITEA_URL%/}/api/v1/repos/${GH_REPOSITORY}"
+          gh_api="${GH_API}"
+
           # 1) Quelle: Gitea-Release + Asset-Liste (Assets liegen auf Gitea).
-          gitea_api="http://localhost:3000/api/v1/repos/${GH_REPOSITORY}"
-          curl -fsSL --max-time 60 \
+          g_code="$(curl -sS -o release-gitea.json -w '%{http_code}' --max-time 60 \
             -H "Authorization: token ${GIT_TOKEN}" \
-            "${gitea_api}/releases/tags/${tag}" \
-            -o release-gitea.json
-          asset_count="$(python3 -c 'import json;print(len(json.load(open("release-gitea.json"))["assets"]))')"
+            "${gitea_api}/releases/tags/${tag}")"
+          if [[ "${g_code:0:1}" != "2" ]]; then
+            echo "::error::Gitea-Release ${tag} nicht lesbar (HTTP ${g_code})." >&2
+            cat release-gitea.json >&2
+            exit 1
+          fi
+          asset_count="$(jq -er '.assets | length' release-gitea.json)"
           echo "Gitea-Assets gefunden: ${asset_count}"
           if [[ "${asset_count}" -lt 1 ]]; then
             echo "::error::Gitea-Release ${tag} hat keine Assets — nichts zu spiegeln." >&2
@@ -469,36 +633,66 @@ jobs:
           fi
 
           # 2) Ziel: GitHub-Release anlegen (idempotent) oder bestehendes holen.
-          export GH_TOKEN="${GH_PAT}"
-          if gh release view "$tag" --repo "$GH_REPOSITORY" >/dev/null 2>&1; then
+          #    curl + REST instead of gh: the runner job image does NOT ship the
+          #    gh CLI (verified: 'command -v gh' -> not found), so any gh call
+          #    would abort the job. The REST contract is stable and explicit.
+          gh_headers=( -H "Authorization: Bearer ${GH_PAT}" \
+                       -H "Accept: application/vnd.github+json" \
+                       -H "X-GitHub-Api-Version: 2022-11-28" )
+          ghr_code="$(curl -sS -o gh-release.json -w '%{http_code}' --max-time 60 "${gh_headers[@]}" \
+            "${gh_api}/repos/${GH_REPOSITORY}/releases/tags/${tag}")"
+          if [[ "${ghr_code:0:1}" == "2" ]]; then
             echo "GitHub-Release ${tag} existiert — Assets werden ersetzt."
           else
-            gh release create "$tag" --repo "$GH_REPOSITORY" --title "$tag" \
-              --notes "Mirror of the Gitea release ${tag} (assets are published on Gitea first; this is a read-only mirror)."
+            payload="$(jq -n --arg tag "$tag" \
+              '{tag_name:$tag, name:$tag, draft:false, prerelease:false, body:("Mirror of the Gitea release " + $tag + " (assets are published on Gitea first; this is a read-only mirror).")}')"
+            ghr_code="$(curl -sS -o gh-release.json -w '%{http_code}' --max-time 60 "${gh_headers[@]}" \
+              -H 'Content-Type: application/json' -X POST \
+              --data-binary "$payload" "${gh_api}/repos/${GH_REPOSITORY}/releases")"
+            if [[ "${ghr_code:0:1}" != "2" ]]; then
+              echo "::error::GitHub-Release ${tag} konnte nicht angelegt werden (HTTP ${ghr_code})." >&2
+              cat gh-release.json >&2
+              exit 1
+            fi
           fi
+          gh_release_id="$(jq -er '.id' gh-release.json)"
+          echo "GitHub release id=${gh_release_id}"
 
-          # 3) Assets von Gitea herunterladen und nach GitHub hochladen (clobber).
+          # 3) Assets von Gitea herunterladen und nach GitHub hochladen.
+          #    First drop any same-named GitHub asset so the upload replaces it
+          #    (the old '--clobber' semantics), then POST the new bytes to the
+          #    uploads endpoint parsed from the release's upload_url.
+          upload_url="$(jq -er '.upload_url' gh-release.json | sed 's/{?name,label}//')"
+          # Gitea release id — partner of the asset download endpoint
+          # /releases/{id}/assets/{attachment_id} used below.
+          g_rel_id="$(jq -er '.id' release-gitea.json)"
           work="$(mktemp -d)"
-          python3 - "$PWD/release-gitea.json" <<'PY'
-          import json, sys
-          for a in json.load(open(sys.argv[1]))["assets"]:
-              print(f"{a['id']}\t{a['name']}")
-          PY
-          while IFS=$'\t' read -r aid name; do
-            echo "-> ${name}"
+          while IFS=$'\t' read -r aid aname; do
+            echo "-> ${aname}"
             curl -fsSL --max-time 600 \
               -H "Authorization: token ${GIT_TOKEN}" \
-              "${gitea_api}/releases/assets/${aid}" -o "${work}/${name}"
-            gh release upload "$tag" "${work}/${name}" --repo "$GH_REPOSITORY" --clobber
-          done < <(python3 - "$PWD/release-gitea.json" <<'PY'
-          import json, sys
-          for a in json.load(open(sys.argv[1]))["assets"]:
-              print(f"{a['id']}\t{a['name']}")
-          PY
-          )
+              "${gitea_api}/releases/${g_rel_id}/assets/${aid}" -o "${work}/${aname}"
+            # Remove a pre-existing asset with the same name (idempotent rerun).
+            old_id="$(curl -sS --max-time 60 "${gh_headers[@]}" \
+              "${gh_api}/repos/${GH_REPOSITORY}/releases/${gh_release_id}/assets?per_page=100" \
+              | jq -r --arg n "$aname" '.[] | select(.name==$n) | .id')"
+            if [[ -n "${old_id}" ]]; then
+              curl -sS -o /dev/null -X DELETE --max-time 60 "${gh_headers[@]}" \
+                "${gh_api}/repos/${GH_REPOSITORY}/releases/assets/${old_id}"
+            fi
+            up_code="$(curl -sS -o upload-gh.json -w '%{http_code}' --max-time 600 "${gh_headers[@]}" \
+              -H 'Content-Type: application/octet-stream' -X POST \
+              --data-binary "@${work}/${aname}" \
+              "${upload_url}?name=$(jq -rn --arg n "$aname" '$n|@uri')")"
+            if [[ "${up_code:0:1}" != "2" ]]; then
+              echo "::error::GitHub-Asset ${aname} konnte nicht hochgeladen werden (HTTP ${up_code})." >&2
+              cat upload-gh.json >&2
+              exit 1
+            fi
+          done < <(jq -r '.assets[] | "\(.id)\t\(.name)"' release-gitea.json)
 
           echo "Mirror abgeschlossen: ${asset_count} Assets für ${tag} auf GitHub."
-          rm -f release-gitea.json
+          rm -f release-gitea.json gh-release.json
 
   # ---------------------------------------------------------------------------
   # verify-consistency: scharfer Konsistenz-Gate NACH Release + Mirror + index.
@@ -530,22 +724,49 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
           GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
           GH_REPOSITORY: ${{ github.repository }}
+          GH_API: "https://api.github.com"
+          # Same tag-resolution rule as the other jobs: tag push -> ref_name,
+          # manual dispatch -> version input.
+          PLUGIN_NAME: ${{ github.event.inputs.version || github.ref_name }}
         run: |
           set -euo pipefail
           if [[ -z "${GH_PAT:-}" || -z "${GIT_TOKEN:-}" ]]; then
             echo "::error::Für die Konsistenzprüfung sind GIT_TOKEN (Gitea) und GH_PAT (GitHub) PFLICHT." >&2
             exit 1
           fi
-          tag="${{ github.ref_name }}"
-          gitea_api="http://localhost:3000/api/v1/repos/${GH_REPOSITORY}"
+          if [[ -z "${GITEA_URL:-}" ]]; then
+            echo "::error::GITEA_URL ist nicht gesetzt (Workflow-env fehlt)." >&2
+            exit 1
+          fi
+          # Pass the tag via env (not a direct ${{ }} interpolation) so an
+          # operator-supplied dispatch input cannot break out into the shell.
+          tag="${PLUGIN_NAME}"
+          gitea_api="${GITEA_URL%/}/api/v1/repos/${GH_REPOSITORY}"
+          gh_api="${GH_API}"
           work="$(mktemp -d)"
           fail=0
 
-          # Gitea-Assets (Name -> id) und GitHub-Assets (Name -> browser_download_url).
-          curl -fsSL --max-time 60 -H "Authorization: token ${GIT_TOKEN}" \
-            "${gitea_api}/releases/tags/${tag}" -o "$work/gitea.json"
-          export GH_TOKEN="${GH_PAT}"
-          gh api "repos/${GH_REPOSITORY}/releases/tags/${tag}" > "$work/github.json"
+          gh_headers=( -H "Authorization: Bearer ${GH_PAT}" \
+                       -H "Accept: application/vnd.github+json" \
+                       -H "X-GitHub-Api-Version: 2022-11-28" )
+
+          # Gitea assets (name -> id) and GitHub assets (name -> download url).
+          # Both endpoints are called with curl (the runner image has no gh).
+          g_code="$(curl -sS -o "$work/gitea.json" -w '%{http_code}' --max-time 60 \
+            -H "Authorization: token ${GIT_TOKEN}" \
+            "${gitea_api}/releases/tags/${tag}")"
+          if [[ "${g_code:0:1}" != "2" ]]; then
+            echo "::error::Gitea-Release ${tag} nicht lesbar (HTTP ${g_code})." >&2
+            cat "$work/gitea.json" >&2
+            exit 1
+          fi
+          h_code="$(curl -sS -o "$work/github.json" -w '%{http_code}' --max-time 60 "${gh_headers[@]}" \
+            "${gh_api}/repos/${GH_REPOSITORY}/releases/tags/${tag}")"
+          if [[ "${h_code:0:1}" != "2" ]]; then
+            echo "::error::GitHub-Release ${tag} nicht lesbar (HTTP ${h_code})." >&2
+            cat "$work/github.json" >&2
+            exit 1
+          fi
 
           python3 - "$GITHUB_WORKSPACE/index.json" "$work/gitea.json" "$work/github.json" <<'PY'
           import json, sys
@@ -569,10 +790,18 @@ jobs:
           PY
 
           # Byte-genauer Vergleich: GitHub-Asset == Gitea-Asset == index.json.
-          export GH_TOKEN="${GH_PAT}"
-          gh release download "$tag" --repo "$GH_REPOSITORY" --dir "$work/gh" --clobber
+          # Download each GitHub release asset via the REST API (the runner
+          # image has no gh). Use the per-asset API endpoint with
+          # Accept: application/octet-stream; browser_download_url is not
+          # usable for a private repo from CI without a browser session.
+          mkdir -p "$work/gh"
+          while IFS=$'\t' read -r aname aurl; do
+            curl -fsSL --max-time 600 "${gh_headers[@]}" \
+              -H "Accept: application/octet-stream" \
+              "$aurl" -o "$work/gh/${aname}"
+          done < <(jq -r '.assets[] | "\(.name)\t\(.url)"' "$work/github.json")
           while IFS= read -r fn; do
-            gitea_sha="$(sha256sum "$work/gh/${fn}" | awk '{print $1}')"
+            gh_sha="$(sha256sum "$work/gh/${fn}" | awk '{print $1}')"
             idx_sha="$(python3 - "$GITHUB_WORKSPACE/index.json" "$fn" <<'PY'
           import json, sys
           idx = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -582,9 +811,9 @@ jobs:
                       print(info.get("sha256", ""))
           PY
           )"
-            echo "Asset ${fn}: github=${gitea_sha} index.json=${idx_sha}"
-            if [[ -z "${idx_sha}" || "${gitea_sha}" != "${idx_sha}" ]]; then
-              echo "::error::HASH-MISMATCH ${fn}: github=${gitea_sha} index.json=${idx_sha}" >&2
+            echo "Asset ${fn}: github=${gh_sha} index.json=${idx_sha}"
+            if [[ -z "${idx_sha}" || "${gh_sha}" != "${idx_sha}" ]]; then
+              echo "::error::HASH-MISMATCH ${fn}: github=${gh_sha} index.json=${idx_sha}" >&2
               fail=1
             fi
           done < <(ls "$work/gh")
