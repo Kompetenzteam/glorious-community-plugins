@@ -21,17 +21,17 @@
       "platforms": {
         "windows-amd64": {
           "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-1.0.0/hello-windows-amd64.glorious-plugin",
-          "sha256": "f0098ddaafe2b2992da9a90686d5865d508e08cb53d6ab0b98e94e9f726fa2fb",
+          "sha256": "46c6f26cc422c412879844399788164c12c5cd3a9fd85db3f47055716f984127",
           "signer_pubkey": "M8NWzAdHcZ7IQZtsDBwACAf8zjtuLFWrzcTkQJTiQ+o="
         },
         "linux-amd64": {
           "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-1.0.0/hello-linux-amd64.glorious-plugin",
-          "sha256": "d57e9ff9246e99236f6212c9820d7f6b4134ae0a3258fa52e62d07d0960ac71e",
+          "sha256": "63952cce86b46272bb525bd5b2a237c908db856ae5eb88c970ce2dd0f2d417c6",
           "signer_pubkey": "M8NWzAdHcZ7IQZtsDBwACAf8zjtuLFWrzcTkQJTiQ+o="
         },
         "darwin-arm64": {
           "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/hello-1.0.0/hello-darwin-arm64.glorious-plugin",
-          "sha256": "970336a6b1242f453b8a316c6f5f469d22908a3519a634983f259d2b293e1e58",
+          "sha256": "c752b089a90ea7f07efb9f249f1b498ee2120200ff4b552a3fbe5259b2b8567c",
           "signer_pubkey": "M8NWzAdHcZ7IQZtsDBwACAf8zjtuLFWrzcTkQJTiQ+o="
         }
       },
