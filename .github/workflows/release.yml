@@ -727,7 +727,7 @@ jobs:
             echo "-> ${aname}"
             enc_name="$(jq -rn --arg n "$aname" '$n|@uri')"
             curl -fsSL --max-time 600 \
-              -H "Authorization: token ***" \
+              -H "Authorization: token ${GIT_TOKEN}" \
               "${gitea_web}/releases/download/${tag}/${enc_name}" -o "${work}/${aname}"
             got_bytes="$(wc -c < "${work}/${aname}" | tr -d ' ')"
             if [[ "${got_bytes}" != "${asize}" ]]; then
@@ -881,7 +881,7 @@ jobs:
           while IFS=$'\t' read -r aname asize; do
             enc_name="$(jq -rn --arg n "$aname" '$n|@uri')"
             curl -fsSL --max-time 600 \
-              -H "Authorization: token ***" \
+              -H "Authorization: token ${GIT_TOKEN}" \
               "${gitea_web}/releases/download/${tag}/${enc_name}" -o "$work/gt/${aname}"
             got="$(wc -c < "$work/gt/${aname}" | tr -d ' ')"
             if [[ "${got}" != "${asize}" ]]; then
