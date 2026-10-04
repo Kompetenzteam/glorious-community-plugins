@@ -786,10 +786,14 @@ jobs:
       - update-index
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout main (Katalog-Zweig)
+      # Check out the SAME commit that triggered this run (github.sha), NOT a
+      # hardcoded 'main'. The workflow file and scripts/verify-consistency.sh
+      # must come from the same tree: pinning 'ref: main' made the job run the
+      # workflow's own step but checked out main, where the script did not
+      # exist yet -> 'bash: scripts/verify-consistency.sh: No such file or
+      # directory' (exit 127) while release/mirror/update-index were green.
+      - name: Checkout (getriggerter Commit)
         uses: actions/checkout@v4
-        with:
-          ref: main
 
       - name: Hash-Konsistenz Gitea == GitHub == index.json prüfen
         shell: bash
@@ -804,4 +808,12 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
           GH_REPOSITORY: ${{ github.repository }}
           TAG: ${{ github.event.inputs.version || github.ref_name }}
-        run: bash scripts/verify-consistency.sh
+        run: |
+          set -euo pipefail
+          echo "== Diagnose =="
+          pwd
+          git -C . rev-parse HEAD || true
+          echo "--- ls -la scripts/ ---"
+          ls -la scripts/ || true
+          echo "--- aufruf: bash scripts/verify-consistency.sh ---"
+          bash scripts/verify-consistency.sh
