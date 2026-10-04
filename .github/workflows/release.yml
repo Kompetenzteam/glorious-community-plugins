@@ -786,130 +786,34 @@ jobs:
       - update-index
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout main (Katalog-Zweig)
+      # Check out the SAME commit that triggered this run (github.sha), NOT a
+      # hardcoded 'main'. The workflow file and scripts/verify-consistency.sh
+      # must come from the same tree: pinning 'ref: main' made the job run the
+      # workflow's own step but checked out main, where the script did not
+      # exist yet -> 'bash: scripts/verify-consistency.sh: No such file or
+      # directory' (exit 127) while release/mirror/update-index were green.
+      - name: Checkout (getriggerter Commit)
         uses: actions/checkout@v4
-        with:
-          ref: main
 
       - name: Hash-Konsistenz Gitea == GitHub == index.json prüfen
         shell: bash
         env:
-          GH_PAT: ${{ secrets.GH_PAT }}
+          # Values are passed to the script via the environment ONLY. The
+          # script itself is a checked-in file (scripts/verify-consistency.sh)
+          # so the runner never has to interpolate ${{ }} inside a shell body
+          # — that is what silently dropped the old inline step while the job
+          # still reported success. See docs/ for the incident note.
+          GITEA_URL: ${{ env.GITEA_URL }}
           GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
           GH_REPOSITORY: ${{ github.repository }}
-          GH_API: "https://api.github.com"
-          # Same tag-resolution rule as the other jobs: tag push -> ref_name,
-          # manual dispatch -> version input.
-          PLUGIN_NAME: ${{ github.event.inputs.version || github.ref_name }}
+          TAG: ${{ github.event.inputs.version || github.ref_name }}
         run: |
           set -euo pipefail
-          if [[ -z "${GH_PAT:-}" || -z "${GIT_TOKEN:-}" ]]; then
-            echo "::error::Für die Konsistenzprüfung sind GIT_TOKEN (Gitea) und GH_PAT (GitHub) PFLICHT." >&2
-            exit 1
-          fi
-          if [[ -z "${GITEA_URL:-}" ]]; then
-            echo "::error::GITEA_URL ist nicht gesetzt (Workflow-env fehlt)." >&2
-            exit 1
-          fi
-          # Pass the tag via env (not a direct ${{ }} interpolation) so an
-          # operator-supplied dispatch input cannot break out into the shell.
-          tag="${PLUGIN_NAME}"
-          gitea_api="${GITEA_URL%/}/api/v1/repos/${GH_REPOSITORY}"
-          gh_api="${GH_API}"
-          work="$(mktemp -d)"
-          fail=0
-
-          gh_headers=( -H "Authorization: Bearer ${GH_PAT}" \
-                       -H "Accept: application/vnd.github+json" \
-                       -H "X-GitHub-Api-Version: 2022-11-28" )
-
-          # Gitea assets (name -> id) and GitHub assets (name -> download url).
-          # Both endpoints are called with curl (the runner image has no gh).
-          g_code="$(curl -sS -o "$work/gitea.json" -w '%{http_code}' --max-time 60 \
-            -H "Authorization: token ${GIT_TOKEN}" \
-            "${gitea_api}/releases/tags/${tag}")"
-          if [[ "${g_code:0:1}" != "2" ]]; then
-            echo "::error::Gitea-Release ${tag} nicht lesbar (HTTP ${g_code})." >&2
-            cat "$work/gitea.json" >&2
-            exit 1
-          fi
-          h_code="$(curl -sS -o "$work/github.json" -w '%{http_code}' --max-time 60 "${gh_headers[@]}" \
-            "${gh_api}/repos/${GH_REPOSITORY}/releases/tags/${tag}")"
-          if [[ "${h_code:0:1}" != "2" ]]; then
-            echo "::error::GitHub-Release ${tag} nicht lesbar (HTTP ${h_code})." >&2
-            cat "$work/github.json" >&2
-            exit 1
-          fi
-
-          python3 - "$GITHUB_WORKSPACE/index.json" "$work/gitea.json" "$work/github.json" <<'PY'
-          import json, sys
-          idx = json.load(open(sys.argv[1], encoding="utf-8"))
-          gitea = {a["name"]: a for a in json.load(open(sys.argv[2]))["assets"]}
-          github = {a["name"]: a for a in json.load(open(sys.argv[3]))["assets"]}
-          missing = []
-          for plugin in idx.get("plugins", []):
-              for plat, info in plugin.get("platforms", {}).items():
-                  fn = info["url"].rsplit("/", 1)[-1]
-                  if fn not in gitea:
-                      missing.append(f"{plugin['name']}/{plat}: {fn} fehlt im Gitea-Release")
-                  if fn not in github:
-                      missing.append(f"{plugin['name']}/{plat}: {fn} fehlt im GitHub-Release")
-          if missing:
-              print("::error::Assets fehlen für die Konsistenzprüfung:")
-              for m in missing:
-                  print("  -", m)
-              sys.exit(1)
-          print(f"OK: {sum(len(p.get('platforms', {})) for p in idx.get('plugins', []))} Plattform-Assets in beiden Releases vorhanden.")
-          PY
-
-          # Byte-genauer Vergleich: GitHub-Asset == Gitea-Asset == index.json.
-          # Both sides are downloaded as the REAL bytes and hashed. The GitHub
-          # API asset endpoint with Accept: application/octet-stream does serve
-          # the bytes (the same path the catalog download uses), and Gitea is
-          # read back via its WEB download path
-          #   /{owner}/{repo}/releases/download/{tag}/{name}
-          # (the API /releases/{id}/assets/{id} endpoint returns metadata JSON,
-          # which must never be hashed here).
-          mkdir -p "$work/gh" "$work/gt"
-          while IFS=$'\t' read -r aname aurl; do
-            curl -fsSL --max-time 600 "${gh_headers[@]}" \
-              -H "Accept: application/octet-stream" \
-              "$aurl" -o "$work/gh/${aname}"
-          done < <(jq -r '.assets[] | "\(.name)\t\(.url)"' "$work/github.json")
-
-          gitea_web="${GITEA_URL%/}/${GH_REPOSITORY}"
-          while IFS=$'\t' read -r aname asize; do
-            enc_name="$(jq -rn --arg n "$aname" '$n|@uri')"
-            curl -fsSL --max-time 600 \
-              -H "Authorization: token ${GIT_TOKEN}" \
-              "${gitea_web}/releases/download/${tag}/${enc_name}" -o "$work/gt/${aname}"
-            got="$(wc -c < "$work/gt/${aname}" | tr -d ' ')"
-            if [[ "${got}" != "${asize}" ]]; then
-              echo "::error::Gitea-Download ${aname} hat ${got} Bytes, erwartet ${asize}." >&2
-              exit 1
-            fi
-          done < <(jq -r '.assets[] | "\(.name)\t\(.size)"' "$work/gitea.json" | sort -u)
-
-          while IFS= read -r fn; do
-            gh_sha="$(sha256sum "$work/gh/${fn}" | awk '{print $1}')"
-            gt_sha="$(sha256sum "$work/gt/${fn}" | awk '{print $1}')"
-            idx_sha="$(python3 - "$GITHUB_WORKSPACE/index.json" "$fn" <<'PY'
-          import json, sys
-          idx = json.load(open(sys.argv[1], encoding="utf-8"))
-          for p in idx.get("plugins", []):
-              for _, info in p.get("platforms", {}).items():
-                  if info["url"].rsplit("/", 1)[-1] == sys.argv[2]:
-                      print(info.get("sha256", ""))
-          PY
-          )"
-            echo "Asset ${fn}: github=${gh_sha} gitea=${gt_sha} index.json=${idx_sha}"
-            if [[ -z "${idx_sha}" || "${gh_sha}" != "${idx_sha}" || "${gh_sha}" != "${gt_sha}" ]]; then
-              echo "::error::HASH-MISMATCH ${fn}: github=${gh_sha} gitea=${gt_sha} index.json=${idx_sha}" >&2
-              fail=1
-            fi
-          done < <(ls "$work/gh")
-          if [[ "$fail" -ne 0 ]]; then
-            echo "::error::Konsistenzprüfung fehlgeschlagen — GitHub-Assets und index.json weichen ab." >&2
-            exit 1
-          fi
-          echo "Konsistenzprüfung grün: alle Assets stimmen zwischen GitHub und index.json überein."
+          echo "== Diagnose =="
+          pwd
+          git -C . rev-parse HEAD || true
+          echo "--- ls -la scripts/ ---"
+          ls -la scripts/ || true
+          echo "--- aufruf: bash scripts/verify-consistency.sh ---"
+          bash scripts/verify-consistency.sh
