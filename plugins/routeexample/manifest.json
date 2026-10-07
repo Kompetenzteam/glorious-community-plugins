@@ -1,0 +1,8 @@
+{
+  "name": "routeexample",
+  "version": "0.1.0",
+  "description": "Beispiel-Plugin 'routeexample': meldet RPC 1.1 und deklariert eine HTTP-Route (GET /hello) über den Contribution-Vertrag — Referenz für den HTTP-Durchgriff.",
+  "entrypoint": "./plugin.exe",
+  "permissions": [],
+  "license": "MIT"
+}
