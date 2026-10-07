@@ -46,12 +46,17 @@ Der Host gatet die gesamte Contribution-Oberfläche fail-closed hinter der
 
 ## Deklarierte Route
 
-| Methode | Pfad     | Objekt         | Aktion | Body             |
-| ------- | -------- | -------------- | ------ | ---------------- |
-| GET     | `/hello` | `routeexample` | `read` | `routeexample-ok` |
+| Methode | Pfad     | Objekt                             | Aktion | Body             |
+| ------- | -------- | ---------------------------------- | ------ | ---------------- |
+| GET     | `/hello` | `plugin.routeexample.routeexample` | `read` | `routeexample-ok` |
 
-Die Route ist **nicht** `Public` und **nicht** `Streaming`; sie ist über
-`functions.json` an das RBAC-Objekt `routeexample` / Aktion `read` gebunden.
+Die Route ist **nicht** `Public` und **nicht** `Streaming`. Der Host erzwingt für
+nicht-öffentliche Routen, dass `Object` im eigenen Plugin-Namensraum liegt und mit
+`plugin.<pluginName>.` beginnt (`internal/plugins/gateway/gateway.go`); der
+RBAC-Loader baut den Namen als `plugin.<pluginName>.<objName>` aus
+`functions.json` (`internal/plugins/rbac_loader.go`). Die Route ist damit an das
+Objekt `plugin.routeexample.routeexample` (Objektname `routeexample` in
+`functions.json`) / Aktion `read` gebunden.
 
 ## Wire-Kontrakt
 
@@ -68,6 +73,17 @@ dem Host fehlzukodieren.
 prüfen: die Route ist deklariert (nicht leer), `ServeHTTP` liefert die erwartete
 Antwort bzw. 404, `Ping`/`Handshake2` melden `1.1`, die Identitätsprüfung ist
 fail-closed, und die Wire-Feldnamen stimmen mit dem Host-Contract überein.
+
+## Berechtigungen
+
+Die `functions.json` deklariert genau ein Objekt `routeexample` mit einer Aktion
+`read`. Diese Aktion steht im System-Aktionsset der Plattform (`read`, `create`,
+`update`, `delete`, `execute`, `manage`, `review`, `grant`, `write`). Die
+deklarierte Route bindet sich an das vollqualifizierte RBAC-Objekt
+`plugin.routeexample.routeexample` / Aktion `read` (siehe „Deklarierte Route").
+Standardmäßig erlaubt `default_role_permissions` der Rolle `user` die Aktion
+`read`; `admin` erhält `*`. Es werden keine weiteren Berechtigungen angefordert
+(`permissions` im Manifest ist leer).
 
 ## EU AI Act, Art. 50
 

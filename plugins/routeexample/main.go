@@ -99,8 +99,15 @@ const (
 	// routePath is the plugin-relative path the host maps under
 	// /plugins/<name>/. It must start with "/".
 	routePath = "/hello"
-	// routeObject is the RBAC object from functions.json the route is bound to.
-	routeObject = "routeexample"
+	// routeObject is the RBAC object the route is bound to. The host enforces
+	// that a non-public route's Object sits inside the owning plugin's own
+	// namespace and starts with "plugin.<pluginName>." followed by a non-empty
+	// segment (internal/plugins/gateway/gateway.go ValidateRouteSpec); the RBAC
+	// loader assembles this name as "plugin." + pluginName + "." + obj.Name
+	// from functions.json (internal/plugins/rbac_loader.go). So the bound object
+	// is "plugin.routeexample.routeexample" for the bare functions.json object
+	// name "routeexample".
+	routeObject = "plugin.routeexample.routeexample"
 	// routeAction is the RBAC action the route requires.
 	routeAction = "read"
 	// routeBody is the fixed response body, so the acceptance E2E can assert a
