@@ -1,0 +1,14 @@
+{
+  "version": "1.0.0",
+  "objects": [
+    {
+      "name": "routeexample",
+      "description": "Beispiel-Objekt des routeexample-Plugins: bindet die deklarierte HTTP-Route GET /hello an eine RBAC-Aktion.",
+      "actions": ["read"],
+      "default_role_permissions": {
+        "user": ["read"],
+        "admin": ["*"]
+      }
+    }
+  ]
+}
