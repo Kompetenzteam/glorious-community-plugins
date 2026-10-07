@@ -37,6 +37,42 @@
       },
       "latest_version": "1.0.1",
       "changelog": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/tag/hello-1.0.1"
+    },
+    {
+      "name": "routeexample",
+      "title": "Routeexample — Beispiel-Plugin mit deklarierter HTTP-Route",
+      "description": "Minimales Referenz-Plugin, das RPC 1.1 über einen eigenen HandshakeService meldet und genau eine HTTP-Route deklariert (GET /hello -> routeexample-ok). Beleg für den HTTP-Durchgriff von Community-Plugins (Contribution-Vertrag).",
+      "author": "Glorious Platform Team",
+      "license": "MIT",
+      "homepage": "https://github.com/Kompetenzteam/glorious-community-plugins/tree/main/plugins/routeexample",
+      "min_platform_version": "1.2.3",
+      "tags": [
+        "beispiel",
+        "route",
+        "http",
+        "rpc-1.1",
+        "referenz"
+      ],
+      "icon_url": "https://raw.githubusercontent.com/Kompetenzteam/glorious-community-plugins/main/icons/routeexample.svg",
+      "platforms": {
+        "windows-amd64": {
+          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/routeexample-0.1.0/routeexample-windows-amd64.glorious-plugin",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "signer_pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        },
+        "linux-amd64": {
+          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/routeexample-0.1.0/routeexample-linux-amd64.glorious-plugin",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "signer_pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        },
+        "darwin-arm64": {
+          "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/routeexample-0.1.0/routeexample-darwin-arm64.glorious-plugin",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "signer_pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        }
+      },
+      "latest_version": "0.1.0",
+      "changelog": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/tag/routeexample-0.1.0"
     }
   ]
 }
