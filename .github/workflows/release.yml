@@ -416,11 +416,52 @@ jobs:
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      # Der Public Key des Autors MUSS in jeden Plattform-Eintrag von index.json
+      # geschrieben werden. Der update-index-Job pinnte bisher nur sha256/url/
+      # latest_version; signer_pubkey blieb auf dem Platzhalter stehen und der
+      # Marketplace haette JEDE Installation abgelehnt. Der Key wird hier exakt
+      # so abgeleitet wie im release-Job (build-plugin --print-pubkey aus dem
+      # selben SIGNING_KEY-Secret) — kein fest verdrahteter Wert, kein Raten.
+      - name: Signer-Public-Key ableiten (aus SIGNING_KEY)
+        id: signer
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SIGNING_KEY:-}" ]]; then
+            echo "::error::Repository-Secret SIGNING_KEY fehlt oder ist leer. Ohne ihn kann der Public Key fuer index.json nicht abgeleitet werden." >&2
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          printf '%s' "$SIGNING_KEY" > "$work/key.pem"
+          if ! grep -q -- "-----BEGIN" "$work/key.pem"; then
+            if ! base64 -d "$work/key.pem" > "$work/key.dec" 2>/dev/null; then
+              echo "::error::SIGNING_KEY ist weder PEM noch Base64." >&2
+              exit 1
+            fi
+            mv "$work/key.dec" "$work/key.pem"
+          fi
+          if ! openssl pkey -in "$work/key.pem" -noout >/dev/null 2>&1; then
+            echo "::error::SIGNING_KEY ist kein gueltiger PKCS#8-Private-Key." >&2
+            exit 1
+          fi
+          (cd tools/build-plugin && go build -o "$work/build-plugin" .)
+          pubkey="$("$work/build-plugin" --print-pubkey --signing-key "$work/key.pem")"
+          rm -rf "$work"
+          if [[ -z "$pubkey" ]]; then
+            echo "::error::build-plugin --print-pubkey lieferte keinen Wert." >&2
+            exit 1
+          fi
+          echo "pubkey=$pubkey" >> "$GITHUB_OUTPUT"
+          echo "signer_pubkey abgeleitet: $pubkey"
+
       - name: index.json auf die Release-Asset-Hashes pinnen
         shell: bash
         env:
           GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
           GH_REPOSITORY: ${{ github.repository }}
+          SIGNER_PUBKEY: ${{ steps.signer.outputs.pubkey }}
         run: |
           set -euo pipefail
           if [[ -z "${GIT_TOKEN:-}" ]]; then
@@ -527,12 +568,16 @@ jobs:
           print(f"tag-validation: OK - {tag!r} -> name={name} version={version}")
           PY
 
-          python3 - "$GITHUB_WORKSPACE/index.json" "$version" "$tag" "$name" "$GITHUB_WORKSPACE/asset-hashes.txt" <<'PY'
+          python3 - "$GITHUB_WORKSPACE/index.json" "$version" "$tag" "$name" "$GITHUB_WORKSPACE/asset-hashes.txt" "$SIGNER_PUBKEY" <<'PY'
           import json, sys, pathlib, re
           idx_path = pathlib.Path(sys.argv[1])
           version = sys.argv[2]
           tag = sys.argv[3]
           name = sys.argv[4]
+          signer_pubkey = sys.argv[6]
+          if not signer_pubkey:
+              print("index-sync: FAIL - leerer signer_pubkey (steps.signer.outputs.pubkey)", file=sys.stderr)
+              sys.exit(1)
           hashes = {}
           for line in pathlib.Path(sys.argv[5]).read_text().splitlines():
               if not line.strip():
@@ -573,6 +618,12 @@ jobs:
               # Plugins gehoeren, werden uebernommen.
               if fn in hashes:
                   info["sha256"] = hashes[fn]
+              # Der Trust-Anker JEDES Plattform-Eintrags ist der Autor-Public-
+              # Key. Er wird aus demselben SIGNING_KEY abgeleitet wie die
+              # Signatur der Assets — nicht geraten, nicht hartkodiert. Ohne
+              # ihn bleibt der Platzhalter stehen und der Marketplace lehnt
+              # jede Installation ab.
+              info["signer_pubkey"] = signer_pubkey
           plugin["latest_version"] = version
           if "changelog" in plugin:
               plugin["changelog"] = retag(plugin["changelog"], tag)

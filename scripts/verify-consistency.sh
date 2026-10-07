@@ -78,19 +78,29 @@ esac
 #   gitea.tsv    : <filename>\t<size-bytes>
 #   github.tsv   : <filename>\t<api-download-url>
 python3 - "$INDEX_JSON" "$work/gitea.json" "$work/github.json" \
-         "$work/expected.tsv" "$work/gitea.tsv" "$work/github.tsv" <<'PY'
+         "$work/expected.tsv" "$work/gitea.tsv" "$work/github.tsv" "$TAG" <<'PY'
 import json, sys
 
-idx_path, gitea_path, github_path, exp_out, gt_out, gh_out = sys.argv[1:7]
+idx_path, gitea_path, github_path, exp_out, gt_out, gh_out, tag = sys.argv[1:8]
 
 idx = json.load(open(idx_path, encoding="utf-8"))
 gitea = {a["name"]: a for a in json.load(open(gitea_path, encoding="utf-8")).get("assets", [])}
 github = {a["name"]: a for a in json.load(open(github_path, encoding="utf-8")).get("assets", [])}
 
+# Scope the check to THE RELEASE UNDER TEST. index.json is a catalog of EVERY
+# published plugin (hello, routeexample, ...), but a single release run only
+# publishes the assets tagged with this TAG. Iterating the whole catalog here
+# would demand that hello's assets exist inside the routeexample release and
+# fail with a spurious MISSING (the earlier red verify-consistency). We select
+# exactly those entries whose asset URL points at this tag's release path,
+# i.e. .../releases/<download|tag>/<tag>/<file>.
+tag_segment = f"/releases/download/{tag}/"
 expected = {}
 for plugin in idx.get("plugins", []):
     for plat, info in plugin.get("platforms", {}).items():
         url = info.get("url", "")
+        if tag_segment not in url:
+            continue
         fn = url.rsplit("/", 1)[-1]
         sha = info.get("sha256", "")
         if not fn:
@@ -101,9 +111,22 @@ for plugin in idx.get("plugins", []):
             sys.exit(1)
         expected[fn] = sha
 
+# Fail-closed: the release under test MUST have at least one catalog entry.
+# An empty selection means the tag matched no index entry at all (typo'd tag,
+# missing update-index push) — never treat that as "nothing to do".
 if not expected:
-    sys.stderr.write("::error::index.json declares no platform assets — nothing to verify\n")
+    sys.stderr.write(f"::error::index.json declares no platform assets for tag {tag} — nothing to verify\n")
     sys.exit(1)
+
+# Every selected asset must also be present in the release under test on BOTH
+# hosts; a mismatched catalog/release pairing is a hard error, not a skip.
+for fn in expected:
+    if fn not in gitea:
+        sys.stderr.write(f"::error::MISSING {fn}: not present in Gitea release {tag}\n")
+        sys.exit(1)
+    if fn not in github:
+        sys.stderr.write(f"::error::MISSING {fn}: not present in GitHub release {tag}\n")
+        sys.exit(1)
 
 with open(exp_out, "w", encoding="utf-8", newline="\n") as fh:
     for fn, sha in expected.items():

@@ -58,17 +58,17 @@
         "windows-amd64": {
           "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/routeexample-0.1.0/routeexample-windows-amd64.glorious-plugin",
           "sha256": "555f6b48d406f24a6d08932bd29192a9b2960bd0978492435c3c5d1a6c9c8df1",
-          "signer_pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          "signer_pubkey": "M8NWzAdHcZ7IQZtsDBwACAf8zjtuLFWrzcTkQJTiQ+o="
         },
         "linux-amd64": {
           "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/routeexample-0.1.0/routeexample-linux-amd64.glorious-plugin",
           "sha256": "52a7992b836d08e2075c9eaa6faf2a355df521af2dd386aed50841123326617f",
-          "signer_pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          "signer_pubkey": "M8NWzAdHcZ7IQZtsDBwACAf8zjtuLFWrzcTkQJTiQ+o="
         },
         "darwin-arm64": {
           "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/routeexample-0.1.0/routeexample-darwin-arm64.glorious-plugin",
           "sha256": "d053f498d84d5ae7d0e007308b7bceee8a8e26c878dd207708a0f43513147c1c",
-          "signer_pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          "signer_pubkey": "M8NWzAdHcZ7IQZtsDBwACAf8zjtuLFWrzcTkQJTiQ+o="
         }
       },
       "latest_version": "0.1.0",
