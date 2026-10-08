@@ -399,6 +399,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      # Muss im JOB-env stehen: GO_VERSION ist oben nur im release-Job
+      # definiert, nicht workflow-weit. Ohne diesen Block ist
+      # ${{ env.GO_VERSION }} hier leer und der Setup-Go-Step bekommt keine
+      # Version (haengt dann am go.mod-Direktiv statt an der gepinnten Version).
+      GO_VERSION: "1.26"
     steps:
       - name: Checkout main (Katalog-Zweig)
         uses: actions/checkout@v4
@@ -415,6 +421,19 @@ jobs:
           version="${PLUGIN_NAME##*-}"
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Fail-closed: der Schritt "Signer-Public-Key ableiten" baut build-plugin
+      # mit `go build` im Modul tools/build-plugin. OHNE diesen Go-Setup-Step
+      # fehlt `go` auf dem PATH des Job-Containers und der Job stirbt mit
+      # exitcode 127 ("go: command not found") — genau die Ursache der roten
+      # update-index-Laeufe, die verify-consistency per `needs` auf SKIPPED
+      # setzten (ein Skipped-Job ist KEIN Nachweis). Der release-Job hat den
+      # Setup-Go-Step schon; update-index braucht ihn ebenso.
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: tools/build-plugin/go.mod
 
       # Der Public Key des Autors MUSS in jeden Plattform-Eintrag von index.json
       # geschrieben werden. Der update-index-Job pinnte bisher nur sha256/url/
