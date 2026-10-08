@@ -57,17 +57,17 @@
       "platforms": {
         "windows-amd64": {
           "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/routeexample-0.1.0/routeexample-windows-amd64.glorious-plugin",
-          "sha256": "555f6b48d406f24a6d08932bd29192a9b2960bd0978492435c3c5d1a6c9c8df1",
+          "sha256": "462b4ee24080ae5ca83ecf4cb8118ea65bb359fa92c80280a4c6a0a06f667497",
           "signer_pubkey": "M8NWzAdHcZ7IQZtsDBwACAf8zjtuLFWrzcTkQJTiQ+o="
         },
         "linux-amd64": {
           "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/routeexample-0.1.0/routeexample-linux-amd64.glorious-plugin",
-          "sha256": "52a7992b836d08e2075c9eaa6faf2a355df521af2dd386aed50841123326617f",
+          "sha256": "57058ebcca8d318dbd6f572a2889c5b0975c29b0f32a04de711ee92ec7e86221",
           "signer_pubkey": "M8NWzAdHcZ7IQZtsDBwACAf8zjtuLFWrzcTkQJTiQ+o="
         },
         "darwin-arm64": {
           "url": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/download/routeexample-0.1.0/routeexample-darwin-arm64.glorious-plugin",
-          "sha256": "d053f498d84d5ae7d0e007308b7bceee8a8e26c878dd207708a0f43513147c1c",
+          "sha256": "1bddda07615fb661f9b86b9877de51cf98671a2a32eeef2421003e20bdb73034",
           "signer_pubkey": "M8NWzAdHcZ7IQZtsDBwACAf8zjtuLFWrzcTkQJTiQ+o="
         }
       },
