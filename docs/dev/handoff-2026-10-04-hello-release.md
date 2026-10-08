@@ -1,5 +1,60 @@
 # Handoff — hello-Plugin: Release-Workflow defekt (2026-10-04)
 
+> ## ⚠️ Stand-Nachtrag (2026-10-07)
+>
+> **Dieser Nachtrag ist die jüngste Aussage im Dokument.** Er wurde nachträglich oben
+> eingefügt und lässt die Historie darunter unverändert; wo unten „Blocker" steht, ist
+> der Stand vom **04.10.2026** gemeint. Belege sind gegen `main` (`474de7fe12e9`)
+> gemessen, nicht gegen den damaligen Branch-Stand.
+>
+> ### (a) Blocker 1 — BEHOBEN
+>
+> Der fehlende `working-directory` im Schritt *„ZIP validieren"* ist auf `main`
+> (`474de7fe12e9d213c14eafb2affd37f21741193f`) behoben. `release.yml`, Datei-Zeile 259,
+> enthält jetzt `working-directory: tools/build-plugin` (Zeile 266) und den
+> Modul-lokalen Build
+> `go build -o ../../verify-zip ./verify-zip` (Zeile 274). Zitat:
+> ```
+> 259:      - name: ZIP validieren (Einträge, Entrypoint vs. Binary, Ed25519-Signatur)
+> ...
+> 266:        working-directory: tools/build-plugin
+> 274:          go build -o ../../verify-zip ./verify-zip
+> ```
+> Belegt per `git show 474de7fe12e9:.github/workflows/release.yml`.
+>
+> ### (b) Blocker 2 — BEHOBEN
+>
+> Die live `index.json` auf `main` zeigt heute **nicht mehr** auf `hello-1.0.0`
+> (HTTP 404), sondern auf **`hello-1.0.1`**; der Release `hello-1.0.1` existiert und
+> liefert für alle drei Plattformen Assets aus. Die drei `sha256` in `index.json` sind
+> bit-genau identisch mit den **selbst gemessenen** Digests der ausgelieferten
+> Gitea- **und** GitHub-Assets (`sha256sum` über beide Download-Pfade):
+>
+> | Plattform | sha256 (Gitea == GitHub) |
+> |---|---|
+> | windows-amd64 | `a164599af2cd6c79a32d0bbaf03bc10623d1c1a8b34f49c9747f5c41d423c3e1` |
+> | linux-amd64 | `7cda7c5142ea02e4731ec23ba874bcbc93ce998f9fcb0aa0efd562a76e86e713` |
+> | darwin-arm64 | `37db09481f0f1693bb216ce45faf74a991cd221c52d0337efb7f4f5d0b80e357` |
+>
+> ### (c) OFFEN — Restpunkt 2 (Manifest-Version ≠ index-Version)
+>
+> Der `manifest.json` **aller drei** `hello-1.0.1`-Assets trägt weiterhin
+> `"version": "1.0.0"`, während die `index.json` `1.0.1` führt (Wert aus dem
+> Release-TAG). Ein Konsistenz-Gate `version == index` existiert nicht — der
+> Widerspruch bleibt unentdeckt. **Als offener Punkt geführt, nicht erledigt.**
+>
+> ### Hinweis — dritter, neuerer Fehlschlag (Run 949, 2026-10-08)
+>
+> Run `949` (workflow_dispatch, `main` `474de7fe12e9`) hatte eine **andere** Ursache als
+> der ursprüngliche Release-Blocker: die drei `release`-Legs liefen **grün** (Asset-Upload
+> ok), der Job **`update-index`** starb erst danach — Schritt *„Signer-Public-Key
+> ableiten"* mit `go: command not found` (`exitcode '127'`): dem Job fehlt `go` auf dem
+> `PATH`. Der Fix ist separat zu führen und hat nichts mit §3/§4 dieses Dokuments zu tun.
+>
+> *Nachtrag erstellt 2026-10-08 12:55 +0200.*
+
+---
+
 **EU AI Act Art. 50:** Dieses Dokument wurde mit KI-Unterstützung erstellt.
 
 **Vorgänger-Session:** 2026-10-03 20:17 → 2026-10-04 09:2x (Session `20261003_201718_9b5974`).
