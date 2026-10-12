@@ -73,6 +73,39 @@
       },
       "latest_version": "0.1.0",
       "changelog": "https://github.com/Kompetenzteam/glorious-community-plugins/releases/tag/routeexample-0.1.0"
+    },
+    {
+      "name": "gsc",
+      "title": "GSC — Glorious Streamer Companion",
+      "description": "Streamer-Companion-Plugin: registriert Host-Kommandos (plugin_gsc_commands) und nutzt den Host-DataService-Kanal (GLORIOUS_PLUGIN_DATA_ADDR). Signiertes Release 0.1.0.",
+      "author": "Glorious Platform Team",
+      "license": "MIT",
+      "homepage": "https://github.com/Kompetenzteam/gsc",
+      "min_platform_version": "0.9.0",
+      "tags": [
+        "gsc",
+        "streamer",
+        "companion"
+      ],
+      "platforms": {
+        "windows-amd64": {
+          "url": "http://localhost:3000/Kompetenzteam/gsc/releases/download/gsc-0.1.0/gsc-0.1.0-windows-amd64.glorious-plugin",
+          "sha256": "f9d0ba6fe92eba5434871dedf981b6810b3a5400e2334c43827611a8325b2a0b",
+          "signer_pubkey": "T8UxsrJlikRWErVMFmcPuY1U4v9gsIBaZKHXwvrG7Fs="
+        },
+        "linux-amd64": {
+          "url": "http://localhost:3000/Kompetenzteam/gsc/releases/download/gsc-0.1.0/gsc-0.1.0-linux-amd64.glorious-plugin",
+          "sha256": "e3b46984940e947ed80de4d97c7709597223bf593707dd01f7794a5274604b55",
+          "signer_pubkey": "T8UxsrJlikRWErVMFmcPuY1U4v9gsIBaZKHXwvrG7Fs="
+        },
+        "darwin-arm64": {
+          "url": "http://localhost:3000/Kompetenzteam/gsc/releases/download/gsc-0.1.0/gsc-0.1.0-darwin-arm64.glorious-plugin",
+          "sha256": "57bca08203b06a67a41dda0950d3ff872f11e4adac11d519e1237403c89f6a59",
+          "signer_pubkey": "T8UxsrJlikRWErVMFmcPuY1U4v9gsIBaZKHXwvrG7Fs="
+        }
+      },
+      "latest_version": "0.1.0",
+      "changelog": "https://github.com/Kompetenzteam/gsc/releases/tag/gsc-0.1.0"
     }
   ]
 }
