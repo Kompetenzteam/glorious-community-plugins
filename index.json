@@ -5,6 +5,39 @@
   "maintainer": "Glorious Platform Team",
   "plugins": [
     {
+      "name": "gsc",
+      "title": "GSC — Glorious Streamer Companion",
+      "description": "Streamer-Companion-Plugin: registriert Host-Kommandos (plugin_gsc_commands) und nutzt den Host-DataService-Kanal (GLORIOUS_PLUGIN_DATA_ADDR). Signiertes Release 0.1.2.",
+      "author": "Glorious Platform Team",
+      "license": "MIT",
+      "homepage": "http://localhost:3000/Kompetenzteam/gsc",
+      "min_platform_version": "0.9.0",
+      "tags": [
+        "gsc",
+        "streamer",
+        "companion"
+      ],
+      "platforms": {
+        "windows-amd64": {
+          "url": "http://localhost:3000/Kompetenzteam/gsc/releases/download/gsc-0.1.2/gsc-0.1.2-windows-amd64.glorious-plugin",
+          "sha256": "a662c8dc98d9d8ddf9f5751bd3cd9a7be3096f8d490733aec193f185866e7912",
+          "signer_pubkey": "T8UxsrJlikRWErVMFmcPuY1U4v9gsIBaZKHXwvrG7Fs="
+        },
+        "linux-amd64": {
+          "url": "http://localhost:3000/Kompetenzteam/gsc/releases/download/gsc-0.1.2/gsc-0.1.2-linux-amd64.glorious-plugin",
+          "sha256": "1e05c3ebb53c8aefd83bea093165adc73b2200263086f618957ca2fb39ca4e1d",
+          "signer_pubkey": "T8UxsrJlikRWErVMFmcPuY1U4v9gsIBaZKHXwvrG7Fs="
+        },
+        "darwin-arm64": {
+          "url": "http://localhost:3000/Kompetenzteam/gsc/releases/download/gsc-0.1.2/gsc-0.1.2-darwin-arm64.glorious-plugin",
+          "sha256": "22f1054849582262b98959924aae141d48a19f3f907429d3870ce67e88d63431",
+          "signer_pubkey": "T8UxsrJlikRWErVMFmcPuY1U4v9gsIBaZKHXwvrG7Fs="
+        }
+      },
+      "latest_version": "0.1.2",
+      "changelog": "http://localhost:3000/Kompetenzteam/gsc/releases/tag/gsc-0.1.2"
+    },
+    {
       "name": "hello",
       "title": "Hello — Vorlagen-Plugin",
       "description": "Entwickler-Vorlage für Glorious-Plugins: minimale, lauffähige Struktur (manifest.json, functions.json, README, Binary) mit vollständiger Referenz-Implementierung des Plugin-Vertrags (mTLS-Listener, net/rpc-Handshake, Ready-Zeile, fail-closed). Registriert seit 0.1.1 ein Demo-Profilfeld (favorite_color) über die functions.json-Sektion profile_fields.",
